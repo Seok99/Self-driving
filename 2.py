@@ -20,3 +20,18 @@ camera
 """
 
 #Lidar
+sick = None
+sick_width = -1
+sick_hight = -1
+sick_fov = -1.0
+
+#Camera
+camera = None
+camera_width = -1
+camera_hight = -1
+camera_fov = -1.0
+
+#GPS
+gps = None
+gps_coords = [0.0, 0.0, 0.0]
+gps_speed = 0.0
