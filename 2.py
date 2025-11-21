@@ -35,3 +35,14 @@ camera_fov = -1.0
 gps = None
 gps_coords = [0.0, 0.0, 0.0]
 gps_speed = 0.0
+
+def color_diff(a,b): #목표 색상과 오차 비교
+    diff = 0
+    for i in range(3):
+        d = a[i] - b[i]
+        if d>0: diff +=d
+        else: diff += -d
+    return diff
+
+def process_camera_image(cam: Camera):
+    REF = ()#Reference(목표)

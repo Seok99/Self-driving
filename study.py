@@ -137,6 +137,7 @@ def check_keyboard(kb: Keyboard):
         set_autodrive(True) #A,a 누르면 auto모드로 전환
 
 def color_diff(a, b):
+    #precess_camera_image부분의 color_diff부분에서 내가 지정한 REF와의 오차 비교를 위한 함수
     diff = 0
     for i in range(3):
         d = a[i] - b[i]
@@ -151,7 +152,7 @@ def color_diff(a, b):
     return diff
 
 def process_camera_imgae(cam: Camera):
-    REF = (95, 187, 203) #Wbots 도로의 중앙선 색의 픽셀값을 미리 파악해서 넣은값. 시작전 픽셀값 미리 파악하기
+    REF = (95, 187, 203) #Wbots 도로의 중앙선 색의 픽셀값을 미리 파악해서 넣은값. 시작전 픽셀값 미리 파악하기 / BGR순서
     num_pixels = camera_height * camera_width
     sumx = 0 #노란 픽셀들의 x좌표 합계
     pixel_count = 0 #노란 픽 수
@@ -160,7 +161,7 @@ def process_camera_imgae(cam: Camera):
     image = cam.getImage() #카메라의 원시 이미지 데이터를 가져옴
     for y in range(camera_height): #가져온 image의 크기 height와 width를 중첩for문을 이용해 전부 검사
         for x in range(camera_width):
-            #RGB가 아닌 BRG 순서로 읽는다 why? 내부 포맷을 위해
+            #RGB가 아닌 BGR 순서로 읽는다 why? 내부 포맷을 위해
             b = Camera.imageGetBlue(image, camera_width, x, y)
             g = Camera.imageGetGreen(image, camera_width, x, y)
             r = Camera.imageGetRed(image, camera_width, x, y)
