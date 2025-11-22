@@ -45,4 +45,4 @@ def color_diff(a,b): #목표 색상과 오차 비교
     return diff
 
 def process_camera_image(cam: Camera):
-    REF = ()#Reference(목표)
+    REF = (67,64,64)#Reference(목표) RGB(64,64,67):아주어두운 회색
