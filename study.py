@@ -43,7 +43,7 @@ sick_fov = -1.0
 display = None
 display_width = 0 #0으로 설정한 이유는 -1은 "이미지없음"을 의미 이미지가 있어도 노출시키지않음
 display_height = 0
-speedmeter_image = None
+speedometer_image = None
 
 #GPS
 gps = None
@@ -295,4 +295,44 @@ def update_display():
             # 복구가 느려짐
         applyPID.oldValue = yellow_line_angle
         return KP * yellow_line_angle + KI * applyPID.integral +KD * diff
+    
+    #센서 있는 경우 가져오기
+    #1 카메라
+    try:
+        camera = Camera('camera')
+        camera.enable(TIME_STEP)
+        has_camera = True
+        camera_width = camera.getWidth()
+        camera_height = camera.getHeight()
+        camera_fov = camera.getFov()
+    except Exception:
+        has_camera = False
+        camera = None
+    #2 라이다센서
+    try:
+        sick = Lidar('Sick LMS 291')
+        sick.enable(TIME_STEP)
+        enable_collision_avoidance = True
+        sick_width = sick.getHorizontaResolution()
+        sick_range = sick.getMaxRaange()
+        sick_fov = sick.getFov()
+    except Exception:
+        enable_collision_avoidance = False
+        sick = None
+    #3 GPS
+    try:
+        gps = GPS('gps')
+        gps.enable(TIME_STEP)
+        has_gps = True
+    except Exception:
+        has_gps = False
+        gps = None
+    #4 display
+    try:
+        display = Display('display')
+        enable_display = True
+        speedometer_image = display.imageLoad('speedometer.png')
+    except Exception:
+        enable_display = False
+        display = None
     
