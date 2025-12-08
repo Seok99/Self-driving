@@ -277,4 +277,22 @@ def update_display():
             applyPID.oldValue = yellow_line_angle #reset시 이전 오차가 존재하지 않아서 강제로 0을 맞추기 위함 (미분항 튐 현상/Derivative kick)방지 위함
             applyPID.integral = 0.0
             PID_need_reset = False
-            
+        #cpopysign(x,y) = x의 절댓값, y의 부호를 반환한다.    
+        if math.copysign(1.0, yellow_line_angle) != math.copysign(1.0, applyPID.oldValue):
+            applyPID.integral = 0.0
+            """새각도(yelow_line)과 이전 각도(oldValue)의 부호를 확인하기 위함
+            부호가 다르면 회전 방향이 다르기 때문, 적분값은 오차를 계속 더한 값이므로 핸들을 과도하게 꺽음
+            이를 방지 하기 위해 적분값을 0.0 으로 재설정"""
+        diff = yellow_line_angle - applyPID.oldValue
+        #현재 각도 - 이전 각도 = 변화량, D는 갑자기 꺾이지 않도록 브레이크 역할
+
+        if -30 < applyPID.integral < 30: #-30~30범윌 일때만 누적
+            applyPID.integral += yellow_line_angle
+            # 왜 제한을 거는가?
+            # 적분이 너무 커지면 다음 문제가 생김:
+            # 핸들을 너무 많이 꺾음
+            # 오버슈팅 → 뱀처럼 흔들림
+            # 복구가 느려짐
+        applyPID.oldValue = yellow_line_angle
+        return KP * yellow_line_angle + KI * applyPID.integral +KD * diff
+    
