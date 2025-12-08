@@ -1,5 +1,5 @@
 from vehicle import Driver
-from controller import Camera, Lider, GPS
+from controller import Camera, Lider, GPS, Display
 import math
 
 #GPS Index값 설정 (가독성을 위해) / GPS[0]보단 GPS[X]가 더 가독성 높음
