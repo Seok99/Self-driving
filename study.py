@@ -1,5 +1,5 @@
 from vehicle import Driver
-from controller import Camera, Lider, GPS, Display
+from controller import Camera, Lider, GPS, Display, Keyboard
 import math
 
 #GPS Index값 설정 (가독성을 위해) / GPS[0]보단 GPS[X]가 더 가독성 높음
@@ -256,83 +256,121 @@ def update_display():
     display.drawText(f"GPS coords: {gps_coords[X]:.1f} {gps_coords[Z]:.1f}", 10, 130)
     display.drawText(f"GPS speed:  {gps_speed:.1f}", 10, 140)
 
-    def compute_gps_speed():
-        global gps_speed, gps_coords
-        coords = gps.getValues() #현재 GPS좌표 반환
-        speed_ms = gps.getSpeed() #거리변화율/시간 을 계산해서 속도를 반환
-        gps_speed = speed_ms * 3.6 #반환되는 값은 m/s이므로 km/h로 변환 필요
-        #1초에 1미터 -> 1시간(3600초)에 3600m = 3.6km ==> m/s에 3.6 곱하면 km/h로 변환
-        gps_coords = list(coords) #coords는 get.value로 튜플값을 가져옴. list로 수정가능한 값으로 변경
-        #튜플은 값 변경못함
+def compute_gps_speed():
+    global gps_speed, gps_coords
+    coords = gps.getValues() #현재 GPS좌표 반환
+    speed_ms = gps.getSpeed() #거리변화율/시간 을 계산해서 속도를 반환
+    gps_speed = speed_ms * 3.6 #반환되는 값은 m/s이므로 km/h로 변환 필요
+    #1초에 1미터 -> 1시간(3600초)에 3600m = 3.6km ==> m/s에 3.6 곱하면 km/h로 변환
+    gps_coords = list(coords) #coords는 get.value로 튜플값을 가져옴. list로 수정가능한 값으로 변경
+    #튜플은 값 변경못함
 
-    def applyPID(yellow_line_angle: float):
-        global PID_need_reset
-        #C언어 Static변수처럼 만듦 -> Python에서 static변수 만드는 방법 if, hasattr을 사용
-        #ahsattr : 변수가 있는지 확인하는 함수
-        if not hasattr(applyPID, "oldValue"): applyPID.oldValue = 0.0 #applyPID함수에 oldValue가 없으면 초기값 0.0으로 지정
-        if not hasattr(applyPID, "integral"): applyPID.integral = 0.0
+def applyPID(yellow_line_angle: float):
+    global PID_need_reset
+    #C언어 Static변수처럼 만듦 -> Python에서 static변수 만드는 방법 if, hasattr을 사용
+    #hsattr : 변수가 있는지 확인하는 함수
+    if not hasattr(applyPID, "oldValue"): applyPID.oldValue = 0.0 #applyPID함수에 oldValue가 없으면 초기값 0.0으로 지정
+    if not hasattr(applyPID, "integral"): applyPID.integral = 0.0
         
-        #PID_need_reset = true면 PID초기화하기 위함 / 차선을 끊겼다가 다시 인식했을 경우를 위해서
-        if PID_need_reset:
-            applyPID.oldValue = yellow_line_angle #reset시 이전 오차가 존재하지 않아서 강제로 0을 맞추기 위함 (미분항 튐 현상/Derivative kick)방지 위함
-            applyPID.integral = 0.0
-            PID_need_reset = False
-        #cpopysign(x,y) = x의 절댓값, y의 부호를 반환한다.    
-        if math.copysign(1.0, yellow_line_angle) != math.copysign(1.0, applyPID.oldValue):
-            applyPID.integral = 0.0
-            """새각도(yelow_line)과 이전 각도(oldValue)의 부호를 확인하기 위함
-            부호가 다르면 회전 방향이 다르기 때문, 적분값은 오차를 계속 더한 값이므로 핸들을 과도하게 꺽음
-            이를 방지 하기 위해 적분값을 0.0 으로 재설정"""
-        diff = yellow_line_angle - applyPID.oldValue
-        #현재 각도 - 이전 각도 = 변화량, D는 갑자기 꺾이지 않도록 브레이크 역할
+    #PID_need_reset = true면 PID초기화하기 위함 / 차선을 끊겼다가 다시 인식했을 경우를 위해서
+    if PID_need_reset:
+        applyPID.oldValue = yellow_line_angle #reset시 이전 오차가 존재하지 않아서 강제로 0을 맞추기 위함 (미분항 튐 현상/Derivative kick)방지 위함
+        applyPID.integral = 0.0
+        PID_need_reset = False
+    #cpopysign(x,y) = x의 절댓값, y의 부호를 반환한다.    
+    if math.copysign(1.0, yellow_line_angle) != math.copysign(1.0, applyPID.oldValue):
+        applyPID.integral = 0.0
+        """새각도(yelow_line)과 이전 각도(oldValue)의 부호를 확인하기 위함
+        부호가 다르면 회전 방향이 다르기 때문, 적분값은 오차를 계속 더한 값이므로 핸들을 과도하게 꺽음
+        이를 방지 하기 위해 적분값을 0.0 으로 재설정"""
+    diff = yellow_line_angle - applyPID.oldValue
+    #현재 각도 - 이전 각도 = 변화량, D는 갑자기 꺾이지 않도록 브레이크 역할
 
-        if -30 < applyPID.integral < 30: #-30~30범윌 일때만 누적
-            applyPID.integral += yellow_line_angle
-            # 왜 제한을 거는가?
-            # 적분이 너무 커지면 다음 문제가 생김:
-            # 핸들을 너무 많이 꺾음
-            # 오버슈팅 → 뱀처럼 흔들림
-            # 복구가 느려짐
-        applyPID.oldValue = yellow_line_angle
-        return KP * yellow_line_angle + KI * applyPID.integral +KD * diff
+    if -30 < applyPID.integral < 30: #-30~30범윌 일때만 누적
+        applyPID.integral += yellow_line_angle
+        # 왜 제한을 거는가?
+        # 적분이 너무 커지면 다음 문제가 생김:
+        # 핸들을 너무 많이 꺾음
+        # 오버슈팅 → 뱀처럼 흔들림
+        # 복구가 느려짐
+    applyPID.oldValue = yellow_line_angle
+    return KP * yellow_line_angle + KI * applyPID.integral +KD * diff
     
-    #센서 있는 경우 가져오기
-    #1 카메라
-    try:
-        camera = Camera('camera')
-        camera.enable(TIME_STEP)
-        has_camera = True
-        camera_width = camera.getWidth()
-        camera_height = camera.getHeight()
-        camera_fov = camera.getFov()
-    except Exception:
-        has_camera = False
-        camera = None
-    #2 라이다센서
-    try:
-        sick = Lidar('Sick LMS 291')
-        sick.enable(TIME_STEP)
-        enable_collision_avoidance = True
-        sick_width = sick.getHorizontaResolution()
-        sick_range = sick.getMaxRaange()
-        sick_fov = sick.getFov()
-    except Exception:
-        enable_collision_avoidance = False
-        sick = None
-    #3 GPS
-    try:
-        gps = GPS('gps')
-        gps.enable(TIME_STEP)
-        has_gps = True
-    except Exception:
-        has_gps = False
-        gps = None
-    #4 display
-    try:
-        display = Display('display')
-        enable_display = True
-        speedometer_image = display.imageLoad('speedometer.png')
-    except Exception:
-        enable_display = False
-        display = None
+#센서 있는 경우 가져오기
+#1 카메라
+try:
+    camera = Camera('camera')
+    camera.enable(TIME_STEP)
+    has_camera = True
+    camera_width = camera.getWidth()
+    camera_height = camera.getHeight()
+    camera_fov = camera.getFov()
+except Exception:
+    has_camera = False
+    camera = None
+
+#2 라이다센서
+try:
+    sick = Lidar('Sick LMS 291')
+    sick.enable(TIME_STEP)
+    enable_collision_avoidance = True
+    sick_width = sick.getHorizontaResolution()
+    sick_range = sick.getMaxRaange()
+    sick_fov = sick.getFov()
+except Exception:
+    enable_collision_avoidance = False
+    sick = None
+#3 GPS
+try:
+    gps = GPS('gps')
+    gps.enable(TIME_STEP)
+    has_gps = True
+except Exception:
+    has_gps = False
+    gps = None
+#4 display
+try:
+    display = Display('display')
+    enable_display = True
+    speedometer_image = display.imageLoad('speedometer.png')
+except Exception:
+    enable_display = False
+    display = None
     
+if has_camera:
+    set_speed(50.0)
+
+# 순서대로 비상등, 하향등, 안개등, 와이퍼 / 자율주행과 관련 X
+# driver.setHazardFlashers(True)
+# driver.setDippedBeams(True)
+# driver.setAntifogLights(True)
+# driver.setWiperMode(WIPER_SLOW)
+
+#도움말 표시
+print_help()
+
+#Keyboard
+kb = Keyboard()
+kb.enable(TIME_STEP)
+
+#메인 루프
+i = 0
+#삼항 연산자
+# A if 조건 else B -> True면 A, Flase면 B
+basic_ts = int(driver.getBasicTimeStep()) if hasattr(driver, 'getBasicTimeStep')else TIME_STEP
+#BasicTimeStep사용하는 이유는 Webots의 world의 기본 간격이 있고 센서 동기화와 맞추기위해서
+
+while driver.step() != -1:
+    #유저 input
+    check_keyboard(kb)
+
+    if i % max(1, int(TIME_STEP / max(1, basic_ts))) ==0:
+        """
+        basic_ts = 16ms, TIME_STEP = 50ms 인경우
+        TIME_STEP / basic_ts = 3.12
+        int로 인해서 3
+        basic_ts가 0이면 Error이므로 max(1, basic_ts)을 이용해서 0이여도 강제로 1로 설정
+        max(1, int())쓰는 이유는 int()안이 0.2처럼 소수면 0으로 Error, 강제로 1로 설정
+        if i % 를 이용해서 배수 일때만 동작하게 설정
+        """
+        if autodrive and has_camera:
