@@ -70,7 +70,7 @@ def print_help():
 #카메라가 없으면 자동운전 불가능을 알려주기 위한 함수
 def set_autodrive(onoff: bool):
     global autodrive
-    if autodrive == onoff:
+    if autodrive == onoff: #설정값이 같으면 굳이 할 변경할 필요가 없으니 return
         return
     autodrive = onoff
     if not autodrive:
@@ -361,7 +361,7 @@ basic_ts = int(driver.getBasicTimeStep()) if hasattr(driver, 'getBasicTimeStep')
 #BasicTimeStep사용하는 이유는 Webots의 world의 기본 간격이 있고 센서 동기화와 맞추기위해서
 
 while driver.step() != -1:
-    #유저 input
+    #유저 input, 키보드 입력 최우선
     check_keyboard(kb)
 
     if i % max(1, int(TIME_STEP / max(1, basic_ts))) ==0:
@@ -373,4 +373,60 @@ while driver.step() != -1:
         max(1, int())쓰는 이유는 int()안이 0.2처럼 소수면 0으로 Error, 강제로 1로 설정
         if i % 를 이용해서 배수 일때만 동작하게 설정
         """
-        if autodrive and has_camera:
+        if autodrive and has_camera: #if 자율주행 모드인가, 카메라가 있는가
+            yellow_line_angle = filter_anlge(process_camera_imgae(camera))
+
+            if enable_collision_avoidance:
+                obstacle_angle, obstacle_dist = process_sick_data(sick)
+            else:
+                obstacle_angle, obstacle_dist = UNKNOWN, 0.0
+            
+
+            if enable_collision_avoidance and obstacle_angle != UNKNOWN:
+                driver.setBrakeIntensity(0.0)
+                # if  - Lidar가 켜져있고, 장애물 감지되면
+                #setBrakeIntensity - 브레이크 해제
+
+                obstacle_steering = steering_angle
+
+                #if 0.0 < <0.4 장애물이 오른쪽 전방에 있으면
+                # obstacle_angle - 0.25 장애물 중심에서 벗어나게 하기위함
+                # max()로 나누는 이유는 장애물과 거리가 가까월질때 급격하게 방향을 틀기 위함 / 0.001은 장애물과 거리가 0에 가까워질 수록 무한대이기때문 폭주 방지
+                # 장애물의 거리가 가까워질때 max()의 값은 작아져서 크게 바퀴를 돌린다. obstacle_dist = 장애물과 차량의 거리
+                if 0.0 < obstacle_angle < 0.4:
+                    obstacle_steering = steering_angle + (obstacle_angle -0.25) / max(0.001, obstacle_dist)
+                elif obstacle_angle > -0.4:
+                    obstacle_steering = steering_angle + (obstacle_angle + 0.25) / max(0.001, obstacle_dist)
+
+                #steer = 최종 조향값
+                steer = steering_angle
+                #노란색 차선을 인식하고 있다면
+                #차선 주행과 장애물 회피 우선순위 구하기 위한 로직
+                if yellow_line_angle != UNKNOWN:
+                    line_following_steering = applyPID(yellow_line_angle) 
+                    # 둘다 같은 방향이라면
+                    if obstacle_steering > 0 and line_following_steering > 0:
+                        # 장애물 회피가 급하면 max로 인해 값이 더 커서 더 큰 회전
+                        steer = max(obstacle_steering, line_following_steering)
+                    elif obstacle_steering < 0 and line_following_steering < 0:
+                        #값이 음수라면 더 작을 수록 급한 회전
+                        steer = min(obstacle_steering, line_following_steering)
+                else:
+                    PID_need_reset = True
+                set_steering_angle(steer)
+
+            #차선만 있는 경우
+            elif yellow_line_angle != UNKNOWN:
+                driver.setBrakeInensity(0.0)
+                set_steering_angle(applyPID(yellow_line_angle))
+
+            #차선 잃은 경우 / 방향을 모르기에 속도 줄이기, 적분항 초기화
+            else:
+                driver.setBrakeIntensity(0.4)
+                PID_need_reset = True
+
+        if has_gps:
+            compute_gps_speed()
+        if enable_display:
+            update_display()
+    i +=1
