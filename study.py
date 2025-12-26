@@ -295,7 +295,8 @@ def applyPID(yellow_line_angle: float):
         # 복구가 느려짐
     applyPID.oldValue = yellow_line_angle
     return KP * yellow_line_angle + KI * applyPID.integral +KD * diff
-    
+
+driver = Driver    
 #센서 있는 경우 가져오기
 #1 카메라
 try:
