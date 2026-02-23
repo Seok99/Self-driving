@@ -1,14 +1,16 @@
 from vehicle import Driver
-from controller import Camera, Lidar, Display, GPS
+from controller import Camera, Lidar, Display, GPS, Keyboard
 import math
 X,Y,Z = 0,1,2
 TIME_STEP = 50
 UNKNOWN = 9999.99
 
 #PID제어 알고리즘
-"""KP = 
+"""
+KP = 
 KI = 
-KD = """ #나중에 설정
+KD = 
+""" #나중에 설정
 PID_need_reset = False
 
 FILTER_SIZE = 3
