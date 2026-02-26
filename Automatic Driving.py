@@ -1,5 +1,5 @@
 from vehicle import Driver
-from controller import Camera, Lidar, Display, GPS, Keyboard
+from controller import Camera, Lider, Display, GPS, Keyboard
 import math
 X,Y,Z = 0,1,2
 TIME_STEP = 50
@@ -75,4 +75,108 @@ def process_camera_image(cam: Camera):
     REF = (67,64,64)#Reference(목표) RGB(64,64,67):아주어두운 회색
     yellow_RGB = (95, 187, 203)
     white_RGB = ()#측정 필요
+    image = cam.getImage()
+    center = camera_width /2
+    #위치에 따른 차선 파악(yellow, white)
+    yellow_left_sum = 0; yellow_left_count = 0
+    yellow_right_sum = 0; yellow_right_count = 0
+    white_left_sum = 0;   white_left_count = 0
+    white_right_sum = 0;  white_right_count = 0
+
+    for y in range(camera_height):
+        for x in range(camera_width):
+            b = Camera.imageGetBlue(image, camera_width, x, y)
+            g = Camera.imageGetGreen(image, camera_width, x, y)
+            r = Camera.imageGetRed(image, camera_width, x, y)
+            if color_diff((b,g,r), yellow_RGB) <30:
+                if x < center:
+                    yellow_left_sum += x;  yellow_left_count += 1
+                else:
+                    yellow_right_sum += x; yellow_right_count += 1
+            elif color_diff((b,g,r),white_RGB):
+                if x < center:
+                    white_left_sum += x; white_left_count += 1
+                else:
+                    white_right_sum += x; white_right_count +=1
+    # 왼쪽/오른쪽 선의 평균 계산
+    # 왼쪽 - 노란색 우선, 없으면 흰색
+    # 오른쪽 - 흰색 우선, 없으면 노란색
+    if yellow_left_count > 0:
+        left_avg = yellow_left_sum / yellow_left_count
+    elif white_left_count > 0:
+        left_avg = white_left_sum / white_left_count
+    else:
+        left_avg = None
     
+    if white_left_count > 0:
+        right_avg = white_right_sum / white_right_count
+    elif yellow_right_count > 0:
+        right_avg = yellow_right_sum / yellow_right_sum
+    else :
+        right_avg = None
+    
+    #차선 중심 결정
+    if left_avg is not None and right_avg is not None:
+        lane_center = (left_avg + right_avg) / 2
+    elif left_avg is not None:
+        lane_center = left_avg + lane_offset
+    elif right_avg is not None:
+        lane_center = right_avg + lane_offset
+    else:
+        return UNKNOWN
+    return ((lane_center / camera_width) - 0.5) * camera_fov
+
+#차량 바퀴 각도
+def set_steering_angle(wheel_angle : float):
+    global steering_angle
+    #변화율 제한 / 차량 최대 조향각 28.6도 == 0.5rad
+    if wheel_angle - steering_angle > 0.1:
+        wheel_angle = steering_angle
+    elif wheel_angle - steering_angle < 0.1:
+        wheel_angle = steering_angle - 0.1
+    #최대 조향각 제한
+    if wheel_angle > 0.5:
+        wheel_angle = 0.5
+    elif wheel_angle < 0.5:
+        wheel_angle  =  -0.5
+    driver.setSteeringAngle(wheel_angle)
+
+#센서 안정화
+_filter_initialized = False #필터 초기화
+_filter_buffer = [0.0] * FILTER_SIZE #3프레임 저장 후 평균계산하여 안정화를 위해
+
+def filter_angle(new_value: float):
+    global _filter_initialized, _filter_buffer
+    if (not _filter_buffer) or new_value == UNKNOWN:
+        #초기 불균형 해소를 위해 미리 값 넣기
+        _filter_buffer = True
+        _filter_buffer = [0.0] * FILTER_SIZE
+    else:
+        for i in range(FILTER_SIZE-1):
+            #Filter_size 만큼 반복해서 넣기
+            _filter_buffer[i] = _filter_buffer[i+1]
+    #값 X -> return UNKNOWN
+    if new_value == UNKNOWN:
+        return UNKNOWN
+    _filter_buffer[FILTER_SIZE-1] = new_value
+    return sum(_filter_buffer) / FILTER_SIZE #평균값 반환
+
+def process_sick_data(sick_dev: Lider):
+    global sick_width, sick_fov
+    
+
+
+#센서 가져오기
+#1 카메라
+try:
+    camera = Camera("camera")
+    camera.enable(TIME_STEP)
+    has_camera = True
+    camera_width = camera.getWidth()
+    camera_height = camera.getHeight()
+    camera_fov = camera.getFov()
+    lane_offset = camera_width * 0.25 #차선 중앙 값, 테스트 후 0.25값 조절 필요
+except Exception as e: #카메라 가져오기 실패
+    print(type(e), e) #오류 출력
+    has_camera = False
+    camera = None
