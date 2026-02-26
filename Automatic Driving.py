@@ -1,5 +1,5 @@
 from vehicle import Driver
-from controller import Camera, Lider, Display, GPS, Keyboard
+from controller import Camera, Lidar, Display, GPS, Keyboard
 import math
 X,Y,Z = 0,1,2
 TIME_STEP = 50
@@ -161,10 +161,13 @@ def filter_angle(new_value: float):
     _filter_buffer[FILTER_SIZE-1] = new_value
     return sum(_filter_buffer) / FILTER_SIZE #평균값 반환
 
-def process_sick_data(sick_dev: Lider):
+def process_sick_data(sick_dev: Lidar):
     global sick_width, sick_fov
-    
-
+    HALF_AREA = 20 #차량 전방영역만 검사
+    image = sick.dev.getRangeImage()
+    if not image or sick_width <= 0:
+        return UNKNOWN, 0.0
+    sumx = 0
 
 #센서 가져오기
 #1 카메라
@@ -180,3 +183,16 @@ except Exception as e: #카메라 가져오기 실패
     print(type(e), e) #오류 출력
     has_camera = False
     camera = None
+
+#2 Lidar센서
+try:
+    sick = Lidar(' Sick LMS 291 ')
+    sick.enable(TIME_STEP)
+    enable_collision_avoidance = True
+    sick_width = sick.getHorizontalResolution()
+    scik_hight = sick.getMaxRange()
+    sick_fov = sick.getFov()
+except Exception as e:
+    print(type(e), e)
+    enable_collision_avoidance = False
+    sick = None
