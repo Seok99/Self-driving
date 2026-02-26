@@ -1,5 +1,5 @@
 from vehicle import Driver
-from controller import Camera, Lider, GPS, Display, Keyboard
+from controller import Camera, Lidar, GPS, Display, Keyboard
 import math
 
 #GPS Index값 설정 (가독성을 위해) / GPS[0]보단 GPS[X]가 더 가독성 높음
@@ -200,7 +200,7 @@ def filter_anlge(new_value: float):
     return sum(_filter_buffer) / FILTER_SIZE #평균값을 냄
 
 #충동장애물을 찾고 장애물의 평균각도와 평균 거리 반환하는 함수
-def process_sick_data(sick_dev: Lider):
+def process_sick_data(sick_dev: Lidar):
     global sick_width, sick_fov
     HALF_AREA = 20 #차량의 중앙(전방영역)만 검사하려는 목적
     image = sick_dev.getRangeImage()
