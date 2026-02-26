@@ -315,8 +315,8 @@ try:
     sick = Lidar('Sick LMS 291')
     sick.enable(TIME_STEP)
     enable_collision_avoidance = True
-    sick_width = sick.getHorizontaResolution()
-    sick_range = sick.getMaxRaange()
+    sick_width = sick.getHorizontalResolution()
+    sick_range = sick.getMaxRange()
     sick_fov = sick.getFov()
 except Exception:
     enable_collision_avoidance = False
