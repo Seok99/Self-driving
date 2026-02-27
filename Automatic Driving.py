@@ -167,7 +167,23 @@ def process_sick_data(sick_dev: Lidar):
     image = sick.dev.getRangeImage()
     if not image or sick_width <= 0:
         return UNKNOWN, 0.0
-    sumx = 0
+    sumx = 0 #장애물 인식된 index 합
+    collision_count = 0 #발견된 장애물 포인트 수
+    obstacle_dist = 0.0 #장애물 평균 거리
+
+    #|---center---|
+    #중앙으로 좌우 인덱스만 검사
+    start = int(sick_width / 2 - HALF_AREA)
+    end = int(sick_width / 2 + HALF_AREA)
+    #검사범위 지정
+    if start < 0:
+        start = 0
+    if end > len(image):
+        end = len(image)
+
+    for x in range(start, end):
+        r = image[x]
+        
 
 #센서 가져오기
 #1 카메라
