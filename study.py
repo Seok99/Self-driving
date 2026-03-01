@@ -128,7 +128,7 @@ def check_keyboard(kb: Keyboard):
     if key == Keyboard.UP:
         set_speed(speed + 5.0)
     elif key == Keyboard.DOWN:
-        set_speed(speed + 5.0)
+        set_speed(speed - 5.0)
     elif key == Keyboard.LEFT:
         chage_manual_steer_angle(-1)
     elif key == Keyboard.RIGHT:
@@ -256,7 +256,7 @@ def update_display():
     display.drawText(f"GPS coords: {gps_coords[X]:.1f} {gps_coords[Z]:.1f}", 10, 130)
     display.drawText(f"GPS speed:  {gps_speed:.1f}", 10, 140)
 
-def compute_gps_speed():
+def compute_gps_speed(): #Display의 속도, 차량 좌표를 위해서 사용
     global gps_speed, gps_coords
     coords = gps.getValues() #현재 GPS좌표 반환
     speed_ms = gps.getSpeed() #거리변화율/시간 을 계산해서 속도를 반환
