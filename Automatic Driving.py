@@ -19,6 +19,7 @@ FILTER_SIZE = 3
 GPS
 Lidar
 camera
+keyboard
 """
 #flags
 has_gps = False
@@ -28,13 +29,13 @@ enable_collision_avoidance = False
 #Lidar
 sick = None
 sick_width = -1
-sick_hight = -1
+sick_height = -1
 sick_fov = -1.0
 
 #Camera
 camera = None
 camera_width = -1
-camera_hight = -1
+camera_height = -1
 camera_fov = -1.0
 
 #GPS
@@ -74,7 +75,7 @@ def color_diff(a,b): #목표 색상과 오차 비교
 def process_camera_image(cam: Camera):
     REF = (67,64,64)#Reference(목표) RGB(64,64,67):아주어두운 회색
     yellow_RGB = (95, 187, 203)
-    white_RGB = ()#측정 필요
+    white_RGB = (255,255,255)#임시 흰색
     image = cam.getImage()
     center = camera_width /2
     #위치에 따른 차선 파악(yellow, white)
@@ -111,7 +112,7 @@ def process_camera_image(cam: Camera):
     if white_left_count > 0:
         right_avg = white_right_sum / white_right_count
     elif yellow_right_count > 0:
-        right_avg = yellow_right_sum / yellow_right_sum
+        right_avg = yellow_right_sum / yellow_right_count
     else :
         right_avg = None
     
@@ -121,7 +122,7 @@ def process_camera_image(cam: Camera):
     elif left_avg is not None:
         lane_center = left_avg + lane_offset
     elif right_avg is not None:
-        lane_center = right_avg + lane_offset
+        lane_center = right_avg - lane_offset
     else:
         return UNKNOWN
     return ((lane_center / camera_width) - 0.5) * camera_fov
@@ -164,7 +165,7 @@ def filter_angle(new_value: float):
 def process_sick_data(sick_dev: Lidar):
     global sick_width, sick_fov
     HALF_AREA = 20 #차량 전방영역만 검사
-    image = sick.dev.getRangeImage()
+    image = sick_dev.getRangeImage()
     if not image or sick_width <= 0:
         return UNKNOWN, 0.0
     sumx = 0 #장애물 인식된 index 합
@@ -183,7 +184,40 @@ def process_sick_data(sick_dev: Lidar):
 
     for x in range(start, end):
         r = image[x]
-        
+        #20.0m 미만 "충돌 객체"간주
+        if r <= 20.0:
+            sumx += x
+            collision_count += 1
+            obstacle_dist += r
+    #장애물 없으면
+    if collision_count == 0:
+        return UNKNOWN, 0.0
+    #평균 거리계산, 메인LOOP에서 핸들을 꺽을 강도가 됨
+    obstacle_dist /= collision_count
+    #각도 변환 / 피할 방향 계산
+    angle = ((sumx / collision_count) / sick_width - 0.5) * sick_fov
+    return angle, obstacle_dist
+
+#속도조절
+def set_speed(kmh: float):
+    global speed
+    if kmh > 200.0: #최대속도 제한
+        kmh = 200.0
+    speed = kmh
+    print(f"setting speed to {kmh:g} km/h")
+    driver.setCruisingSpeed(kmh) #차량 속도 조절
+
+#키보드 조절
+def Check_keyboard(kb: Keyboard):
+    key =  kb.getKey() #사용자가 누른키 코드를 key에 저장
+    if key == Keyboard.UP:
+        set_speed(speed + 5.0)
+    elif key == Keyboard.DOWN:
+        set_speed(speed - 5.0)
+
+#PID제어기 / ex: 차선 이탈시 얼마나 벗어났는지 오차계산
+def applyPID(lane_angle: float):
+    
 
 #센서 가져오기
 #1 카메라
