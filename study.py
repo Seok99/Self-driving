@@ -151,7 +151,7 @@ def color_diff(a, b):
         """
     return diff
 
-def process_camera_imgae(cam: Camera):
+def process_camera_image(cam: Camera):
     REF = (95, 187, 203) #Wbots 도로의 중앙선 색의 픽셀값을 미리 파악해서 넣은값. 시작전 픽셀값 미리 파악하기 / BGR순서
     num_pixels = camera_height * camera_width
     sumx = 0 #노란 픽셀들의 x좌표 합계
@@ -375,7 +375,7 @@ while driver.step() != -1:
         if i % 를 이용해서 배수 일때만 동작하게 설정
         """
         if autodrive and has_camera: #if 자율주행 모드인가, 카메라가 있는가
-            yellow_line_angle = filter_anlge(process_camera_imgae(camera))
+            yellow_line_angle = filter_anlge(process_camera_image(camera))
 
             if enable_collision_avoidance:
                 obstacle_angle, obstacle_dist = process_sick_data(sick)
