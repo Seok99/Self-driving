@@ -49,6 +49,12 @@ steering_angle = 0.0
 manul_steering = 0 #수동용으로 보류중
 autodrive = True
 
+#도움말 노출
+def print_help():
+    print("You can drive this car")
+    print("Select the 3D window and then use the cursor key to:")
+    print("[UP]/[DOWN] - accelerate/slow down")
+
 #자동운전 불가능이면 공지하기
 def set_autodrive(onoff : bool):
     global autodrive
@@ -217,7 +223,31 @@ def Check_keyboard(kb: Keyboard):
 
 #PID제어기 / ex: 차선 이탈시 얼마나 벗어났는지 오차계산
 def applyPID(lane_angle: float):
-    
+    global PID_need_reset
+    #static변수 생성 / hasattr : 함수안에 변수 있으면 True
+    if not hasattr(applyPID, "oldValue"):
+        applyPID.oldValue = 0.0 #oldValue가 없으면 생성
+    if not hasattr(applyPID, "integral"):
+        applyPID.integral = 0.0 #integral없으면 생성
+    #PID_need_reset == True면 PID초기화
+    if PID_need_reset:
+        applyPID.oldValue = lane_angle
+        applyPID.integral = 0.0
+        PID_need_reset = False
+    #copysign(x,y) = x의 절댓값, y의 부호를 반환한다.
+    if math.copysign(1.0, lane_angle) != math.copysign(1.0, applyPID.oldValue):
+        applyPID.integral = 0.0
+    diff = lane_angle - applyPID.oldValue
+
+    if -30 < applyPID.integral < 30:
+        applyPID.integral += lane_angle #적분 제한
+        #제한 이유 : 커질수록 핸들을 꺽는 각이 커지고, 차량 흔들림, 복구가 느림
+    applyPID.oldValue = lane_angle
+    return KP * lane_angle + KI * applyPID.integral + KD * diff
+
+#driver선언
+driver = Driver
+
 
 #센서 가져오기
 #1 카메라
@@ -246,3 +276,45 @@ except Exception as e:
     print(type(e), e)
     enable_collision_avoidance = False
     sick = None
+
+#도움말 노출
+print_help()
+
+#키보드
+kb = Keyboard()
+kb.enable(TIME_STEP)
+
+#Main
+i = 0
+
+#센서 동기화를 위해 Webots의 world 기본 간격(BasicTimeStep)을 사용, 없으면 지정한 간격 사용
+if hasattr(driver, 'getBasicTimeStep'):
+    basic_ts = int(driver.getBasicTimeStep())
+else:
+    basic_ts = TIME_STEP
+
+#LOOP
+while driver.set() != -1:
+    Check_keyboard(kb)
+
+    """
+    basic_ts = 16ms, TIME_STEP = 50ms 인경우
+    TIME_STEP / basic_ts = 3.12
+    int로 인해서 3
+    basic_ts가 0이면 Error이므로 max(1, basic_ts)을 이용해서 0이여도 강제로 1로 설정
+    max(1, int())쓰는 이유는 int()안이 0.2처럼 소수면 0으로 Error, 강제로 1로 설정
+    if i % 를 이용해서 배수 일때만 동작하게 설정
+    """
+    if i % max(1, int(TIME_STEP / max(1, basic_ts))) == 0:
+        if autodrive and has_camera:
+            lane_line_angle = filter_angle(process_camera_image(camera))
+
+            if enable_collision_avoidance:
+                obstacle_angle, obstacle_dist = process_sick_data(sick)
+            else:
+                obstacle_angle, obstacle_dist =  UNKNOWN, 0.0
+            
+
+            if enable_collision_avoidance and obstacle_angle != UNKNOWN:
+                driver.setBrakeIntensity(0.0)
+                
