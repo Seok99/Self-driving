@@ -268,7 +268,7 @@ def compute_gps_speed(): #Display의 속도, 차량 좌표를 위해서 사용
 def applyPID(yellow_line_angle: float):
     global PID_need_reset
     #C언어 Static변수처럼 만듦 -> Python에서 static변수 만드는 방법 if, hasattr을 사용
-    #hsattr : 변수가 있는지 확인하는 함수
+    #hasattr : 변수가 있는지 확인하는 함수
     if not hasattr(applyPID, "oldValue"): applyPID.oldValue = 0.0 #applyPID함수에 oldValue가 없으면 초기값 0.0으로 지정
     if not hasattr(applyPID, "integral"): applyPID.integral = 0.0
         
@@ -277,7 +277,7 @@ def applyPID(yellow_line_angle: float):
         applyPID.oldValue = yellow_line_angle #reset시 이전 오차가 존재하지 않아서 강제로 0을 맞추기 위함 (미분항 튐 현상/Derivative kick)방지 위함
         applyPID.integral = 0.0
         PID_need_reset = False
-    #cpopysign(x,y) = x의 절댓값, y의 부호를 반환한다.    
+    #copysign(x,y) = x의 절댓값, y의 부호를 반환한다.    
     if math.copysign(1.0, yellow_line_angle) != math.copysign(1.0, applyPID.oldValue):
         applyPID.integral = 0.0
         """새각도(yelow_line)과 이전 각도(oldValue)의 부호를 확인하기 위함
@@ -286,7 +286,7 @@ def applyPID(yellow_line_angle: float):
     diff = yellow_line_angle - applyPID.oldValue
     #현재 각도 - 이전 각도 = 변화량, D는 갑자기 꺾이지 않도록 브레이크 역할
 
-    if -30 < applyPID.integral < 30: #-30~30범윌 일때만 누적
+    if -30 < applyPID.integral < 30: #-30~30범위 일때만 누적
         applyPID.integral += yellow_line_angle
         # 왜 제한을 거는가?
         # 적분이 너무 커지면 다음 문제가 생김:
@@ -359,7 +359,7 @@ i = 0
 #삼항 연산자
 # A if 조건 else B -> True면 A, Flase면 B
 basic_ts = int(driver.getBasicTimeStep()) if hasattr(driver, 'getBasicTimeStep')else TIME_STEP
-#BasicTimeStep사용하는 이유는 Webots의 world의 기본 간격이 있고 센서 동기화와 맞추기위해서
+#BasicTimeStep 사용하는 이유는 Webots의 world의 기본 간격이 있고 센서 동기화와 맞추기위해서
 
 while driver.step() != -1:
     #유저 input, 키보드 입력 최우선
