@@ -105,6 +105,7 @@ def process_camera_image(cam: Camera):
                     white_left_sum += x; white_left_count += 1
                 else:
                     white_right_sum += x; white_right_count +=1
+    center_yellow_line = (yellow_left_count > 0)
     # 왼쪽/오른쪽 선의 평균 계산
     # 왼쪽 - 노란색 우선, 없으면 흰색
     # 오른쪽 - 흰색 우선, 없으면 노란색
@@ -130,8 +131,10 @@ def process_camera_image(cam: Camera):
     elif right_avg is not None:
         lane_center = right_avg - lane_offset
     else:
-        return UNKNOWN
-    return ((lane_center / camera_width) - 0.5) * camera_fov
+        return UNKNOWN, False
+    
+    lane_angle = ((lane_center / camera / camera_width) - 0.5) * camera_fov
+    return lane_angle, False
 
 #차량 바퀴 각도
 def set_steering_angle(wheel_angle : float):
@@ -170,39 +173,59 @@ def filter_angle(new_value: float):
 
 def process_sick_data(sick_dev: Lidar):
     global sick_width, sick_fov
-    HALF_AREA = 20 #차량 전방영역만 검사
-    image = sick_dev.getRangeImage()
+    image = sick_dev.getRangeImage() #sick(lidar)의 거리값
     if not image or sick_width <= 0:
-        return UNKNOWN, 0.0
-    sumx = 0 #장애물 인식된 index 합
-    collision_count = 0 #발견된 장애물 포인트 수
-    obstacle_dist = 0.0 #장애물 평균 거리
+        return UNKNOWN, True, True
+    mid = int(sick_width / 2)
+    
+    #시뮬레이션 환경에 맞게 변경 예정
+    CENTER_HALF = 15 #정면 영역의 절반 폭
+    LANE_WIDTH = 35 #옆 차선을 검사할 폭
+    #
 
-    #|---center---|
-    #중앙으로 좌우 인덱스만 검사
-    start = int(sick_width / 2 - HALF_AREA)
-    end = int(sick_width / 2 + HALF_AREA)
-    #검사범위 지정
-    if start < 0:
-        start = 0
-    if end > len(image):
-        end = len(image)
+    #3개 Zone의 시작과 끝 인덱스 계산
+    #1. 중앙영역 검사
+    center_start = max(0, mid - CENTER_HALF)
+    center_end = max(sick_width, mid + CENTER_HALF)
+    #2. 왼쪽영역 검사
+    left_start = max(0, center_start - LANE_WIDTH)
+    left_end = center_start
+    #3. 오른쪽영역 검사
+    right_start = center_end + LANE_WIDTH
+    right_end = min(sick_width, center_end + LANE_WIDTH)
 
-    for x in range(start, end):
+    #초기 상태 설정
+    front_dist = UNKNOWN
+    left_clear = True
+    right_clear = True
+
+    SAFE_DIST = 20.0 #전방에 장애물 있다고 판단할 거리
+    SIDE_SAFE_DIST = 15.0 #차선 변경시 옆 차선이 비어있다고 판달할 안전거리
+    "side_safe_dist의 15의 값은 바로 옆인지 아니면 대각선 앞쪽을 판단하는건지?"
+    #정면 검사
+    min_front_dist = 999.0
+    "왜 min_front_dist는 999.0으로 설정했는지 그리고 왜 처음부터 front_dist를 쓰지 않았나"
+    for x in range(center_start):
         r = image[x]
-        #20.0m 미만 "충돌 객체"간주
-        if r <= 20.0:
-            sumx += x
-            collision_count += 1
-            obstacle_dist += r
-    #장애물 없으면
-    if collision_count == 0:
-        return UNKNOWN, 0.0
-    #평균 거리계산, 메인LOOP에서 핸들을 꺽을 강도가 됨
-    obstacle_dist /= collision_count
-    #각도 변환 / 피할 방향 계산
-    angle = ((sumx / collision_count) / sick_width - 0.5) * sick_fov
-    return angle, obstacle_dist
+        if r <  SAFE_DIST:
+            if r < min_front_dist:
+                min_front_dist = r
+    if min_front_dist != 999.0:
+        front_dist = min_front_dist #거리가 가장 가까운 장애물 거리 저장
+    
+    #왼쪽 차선 검사
+    for x in range(left_start, left_end):
+        if image[x] < SIDE_SAFE_DIST:
+            left_clear = False
+            break #하나 발견되면 더 이상 검사가 필요없음
+    
+    #오른쪽 차선 검사
+    for x in range(right_start, right_end):
+        if image[x] < SIDE_SAFE_DIST:
+            right_clear = False
+            break
+    return front_dist, left_clear, right_clear
+
 
 #속도조절
 def set_speed(kmh: float):
