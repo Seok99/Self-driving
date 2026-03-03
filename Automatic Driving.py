@@ -81,7 +81,7 @@ def color_diff(a,b): #목표 색상과 오차 비교
 def process_camera_image(cam: Camera):
     REF = (67,64,64)#Reference(목표) RGB(64,64,67):아주어두운 회색
     yellow_RGB = (95, 187, 203)
-    white_RGB = (255,255,255)#임시 흰색
+    white_RGB = (255, 255, 255)#임시 흰색
     image = cam.getImage()
     center = camera_width /2
     #위치에 따른 차선 파악(yellow, white)
@@ -100,7 +100,7 @@ def process_camera_image(cam: Camera):
                     yellow_left_sum += x;  yellow_left_count += 1
                 else:
                     yellow_right_sum += x; yellow_right_count += 1
-            elif color_diff((b,g,r),white_RGB):
+            elif color_diff((b,g,r),white_RGB) <30:
                 if x < center:
                     white_left_sum += x; white_left_count += 1
                 else:
@@ -270,7 +270,7 @@ try:
     sick.enable(TIME_STEP)
     enable_collision_avoidance = True
     sick_width = sick.getHorizontalResolution()
-    scik_hight = sick.getMaxRange()
+    scik_height = sick.getMaxRange()
     sick_fov = sick.getFov()
 except Exception as e:
     print(type(e), e)
@@ -294,9 +294,8 @@ else:
     basic_ts = TIME_STEP
 
 #LOOP
-while driver.set() != -1:
+while driver.setp() != -1:
     Check_keyboard(kb)
-
     """
     basic_ts = 16ms, TIME_STEP = 50ms 인경우
     TIME_STEP / basic_ts = 3.12
@@ -314,7 +313,19 @@ while driver.set() != -1:
             else:
                 obstacle_angle, obstacle_dist =  UNKNOWN, 0.0
             
-
+            #if - 충돌방지 ON and 전방 장애물 감지
             if enable_collision_avoidance and obstacle_angle != UNKNOWN:
-                driver.setBrakeIntensity(0.0)
+                driver.setBrakeIntensity(0.0) #브레이크 해제
+
+                obstacle_steering = steering_angle
+                #방향,각도 설정
+                #-0.4~0.0 왼쪽에 장애물, 0.0~0.4 오른쪽에 장애물
+                if 0.0 < obstacle_angle < 0.0:
+                    obstacle_steering = steering_angle + (obstacle_angle - 0.25) / max(0.001, obstacle_dist)
+                elif obstacle_angle > -0.4:
+                    obstacle_steering = steering_angle + (obstacle_angle + 0.25) / max(0.001, obstacle_dist)
                 
+                #최종 조향값
+                steer = steering_angle
+
+                if lane_line_angle != UNKNOWN:
