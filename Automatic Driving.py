@@ -35,7 +35,7 @@ camera_fov = -1.0
 
 
 #State
-speed = None
+speed = 0.0
 steering_angle = 0.0
 manul_steering = 0 #수동용으로 보류중
 autodrive = True
@@ -74,6 +74,8 @@ def process_camera_image(cam: Camera):
     yellow_RGB = (95, 187, 203)
     white_RGB = (255, 255, 255)#임시 흰색
     image = cam.getImage()
+    if image is None:#첫 프레임 에러 방지용
+        return UNKNOWN, False
     center = camera_width /2
     #위치에 따른 차선 파악(yellow, white)
     yellow_left_sum = 0; yellow_left_count = 0
@@ -124,7 +126,7 @@ def process_camera_image(cam: Camera):
     else:
         return UNKNOWN, False
     
-    lane_angle = ((lane_center / camera / camera_width) - 0.5) * camera_fov
+    lane_angle = ((lane_center / camera_width) - 0.5) * camera_fov
     return lane_angle, False
 
 #차량 바퀴 각도
@@ -138,7 +140,7 @@ def set_steering_angle(wheel_angle : float):
     #최대 조향각 제한
     if wheel_angle > 0.5:
         wheel_angle = 0.5
-    elif wheel_angle < 0.5:
+    elif wheel_angle < -0.5:
         wheel_angle  =  -0.5
     driver.setSteeringAngle(wheel_angle)
 
@@ -177,7 +179,7 @@ def process_sick_data(sick_dev: Lidar):
     #3개 Zone의 시작과 끝 인덱스 계산
     #1. 중앙영역 검사
     center_start = max(0, mid - CENTER_HALF)
-    center_end = max(sick_width, mid + CENTER_HALF)
+    center_end = min(sick_width, mid + CENTER_HALF)
     #2. 왼쪽영역 검사
     left_start = max(0, center_start - LANE_WIDTH)
     left_end = center_start
@@ -259,7 +261,7 @@ def applyPID(lane_angle: float):
     return KP * lane_angle + KI * applyPID.integral + KD * diff
 
 #driver선언
-driver = Driver
+driver = Driver()
 
 
 #센서 가져오기
@@ -279,7 +281,7 @@ except Exception as e: #카메라 가져오기 실패
 
 #2 Lidar센서
 try:
-    sick = Lidar(' Sick LMS 291 ')
+    sick = Lidar('Sick LMS 291')
     sick.enable(TIME_STEP)
     enable_collision_avoidance = True
     sick_width = sick.getHorizontalResolution()
@@ -307,7 +309,7 @@ else:
     basic_ts = TIME_STEP
 
 #LOOP
-while driver.setp() != -1:
+while driver.step() != -1:
     Check_keyboard(kb) #키보드 입력 확인
     
     #센서 업데이트 주기 동기화
