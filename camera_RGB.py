@@ -3,7 +3,7 @@ from controller import Robot
 robot = Robot()
 timestep = int(robot.getBasicTimeStep())
 
-camera = robot.getDevice("camera")
+camera = robot.getDevice("camera(1)")
 camera.enable(timestep)
 
 # Step을 반드시 진행
