@@ -1,26 +1,21 @@
 from vehicle import Driver
-from controller import Camera, Lidar, Display, GPS, Keyboard
+from controller import Camera, Lidar, Keyboard
 import math
 X,Y,Z = 0,1,2
 TIME_STEP = 50
 UNKNOWN = 9999.99
 
 #PID제어 알고리즘
-"""
-KP = 
-KI = 
-KD = 
-""" #나중에 설정
+"시뮬레이션 후 조정 필요"
+KP = 0.25
+KI = 0.006
+KD = 2.0
+
 PID_need_reset = False
 
+#노이즈 제거용
 FILTER_SIZE = 3
 
-"""필요한거
-GPS
-Lidar
-camera
-keyboard
-"""
 #flags
 has_gps = False
 has_camera = False
@@ -38,10 +33,6 @@ camera_width = -1
 camera_height = -1
 camera_fov = -1.0
 
-#GPS
-gps = None
-gps_coords = [0.0, 0.0, 0.0]
-gps_speed = 0.0
 
 #State
 speed = None
@@ -201,10 +192,9 @@ def process_sick_data(sick_dev: Lidar):
 
     SAFE_DIST = 20.0 #전방에 장애물 있다고 판단할 거리
     SIDE_SAFE_DIST = 15.0 #차선 변경시 옆 차선이 비어있다고 판달할 안전거리
-    "side_safe_dist의 15의 값은 바로 옆인지 아니면 대각선 앞쪽을 판단하는건지?"
+    
     #정면 검사
     min_front_dist = 999.0
-    "왜 min_front_dist는 999.0으로 설정했는지 그리고 왜 처음부터 front_dist를 쓰지 않았나"
     for x in range(center_start):
         r = image[x]
         if r <  SAFE_DIST:
@@ -318,37 +308,78 @@ else:
 
 #LOOP
 while driver.setp() != -1:
-    Check_keyboard(kb)
-    """
-    basic_ts = 16ms, TIME_STEP = 50ms 인경우
-    TIME_STEP / basic_ts = 3.12
-    int로 인해서 3
-    basic_ts가 0이면 Error이므로 max(1, basic_ts)을 이용해서 0이여도 강제로 1로 설정
-    max(1, int())쓰는 이유는 int()안이 0.2처럼 소수면 0으로 Error, 강제로 1로 설정
-    if i % 를 이용해서 배수 일때만 동작하게 설정
-    """
+    Check_keyboard(kb) #키보드 입력 확인
+    
+    #센서 업데이트 주기 동기화
     if i % max(1, int(TIME_STEP / max(1, basic_ts))) == 0:
         if autodrive and has_camera:
-            lane_line_angle = filter_angle(process_camera_image(camera))
-
-            if enable_collision_avoidance:
-                obstacle_angle, obstacle_dist = process_sick_data(sick)
-            else:
-                obstacle_angle, obstacle_dist =  UNKNOWN, 0.0
             
-            #if - 충돌방지 ON and 전방 장애물 감지
-            if enable_collision_avoidance and obstacle_angle != UNKNOWN:
-                driver.setBrakeIntensity(0.0) #브레이크 해제
+            #1. 카메라 데이터 받아오기 
+            raw_angle, is_center_line = process_camera_image(camera)
+            lane_line_angle = filter_angle(raw_angle)
 
-                obstacle_steering = steering_angle
-                #방향,각도 설정
-                #-0.4~0.0 왼쪽에 장애물, 0.0~0.4 오른쪽에 장애물
-                if 0.0 < obstacle_angle < 0.0:
-                    obstacle_steering = steering_angle + (obstacle_angle - 0.25) / max(0.001, obstacle_dist)
-                elif obstacle_angle > -0.4:
-                    obstacle_steering = steering_angle + (obstacle_angle + 0.25) / max(0.001, obstacle_dist)
+            #2. 라이다 데이터 받아오기
+            if enable_collision_avoidance:
+                front_dist, left_clear, right_clear = process_sick_data(sick)
+            else:
+                front_dist, left_clear, right_clear  =  UNKNOWN, True, True
+            
+            #초기 제어값 설정(브레이크 OFF, 현재 핸들 각도 유지)
+            break_intensity = 0.0
+            steer = steering_angle
+
+            #3. 상화별 판단 로직
+            if lane_line_angle != UNKNOWN:
+                #기본 주행 - 차선 유지 PID 조향각 계산
+                line_following_steering = applyPID(lane_line_angle)
                 
-                #최종 조향값
-                steer = steering_angle
+                #충돌 방지 기능 ON and 앞에 장애물 발견된 경우
+                if enable_collision_avoidance and front_dist != UNKNOWN:
+                    #전방 15m 이내에 장애물이 다가온 경우 -> 회피
+                    if front_dist < 15.0:
+                        #Case 1 : 현재 1차선(왼쪽에 노란 중앙선)인 경우
+                        if is_center_line:
+                            if right_clear: #오른쪽 비어있으면 우측으로 차선 변경
+                                steer = steering_angle - 0.3
+                                PID_need_reset = True #True면 PID초기화, 차선변경동안 에러누적 방지를 위함
+                            else:
+                                #오른쪽으로 못가는 상황이면 브레이크
+                                calculated_brake = (15.0 - front_dist) / 10.0
+                                break_intensity = min(max(calculated_brake, 0.2), 1.0) #0.2~1.0으로 제한하기 위함
+                                print("충돌 위험, 회피 공간 없음. 긴급 제동")
+                        #Case 2 : 현재 2차선 혹은 그 외의 차선인 경우
+                        else:
+                            if left_clear:
+                                steer = steering_angle + 0.3
+                                PID_need_reset = True
+                                print("전방 차량(장애물) 발견! 왼쪽 차선으로 변경합니다.")
+                            elif right_clear:
+                                steer = steering_angle - 0.3
+                                PID_need_reset = True
+                                print("전방 차량(장애물) 발견! 오른쪽 차선으로 변경합니다.")
+                            else:
+                                calculated_brake = (15.0 - front_dist) / 10.0
+                                break_intensity = min(max(calculated_brake, 0.2), 1.0)
+                                print("충돌 위험, 회피 공간 없음. 긴급 제동")
+                        
+                        #전방 거리와 5m 이내로 가까우면 확실한 긴급제동
+                        if front_dist < 5.0:
+                            break_intensity = 1.0
+                            print("충돌 임박! 긴급 제동!")
+                    
+                    #전방 차량(장애물)있어도 15m이상이면 차선유지
+                    else:
+                        steer = line_following_steering
+                #전방 차량(장애물) 아예 없는 경우 -> 차선 유지
+                else:
+                    steer = line_following_steering
+            #차선을 잃은 경우
+            else:
+                break_intensity = 0.4
+                PID_need_reset = True
+                print("차선을 잃었습니다. 감속합니다.")
 
-                if lane_line_angle != UNKNOWN:
+            #4. 행동을 차량에 전달
+            driver.setBrakeIntensity(break_intensity)
+            set_steering_angle(steer)
+    i += 1
