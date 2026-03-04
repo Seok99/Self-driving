@@ -72,7 +72,7 @@ def color_diff(a,b): #목표 색상과 오차 비교
 def process_camera_image(cam: Camera):
     REF = (67,64,64)#Reference(목표) RGB(64,64,67):아주어두운 회색
     yellow_RGB = (95, 187, 203)
-    white_RGB = (255, 255, 255)#임시 흰색
+    white_RGB = (235, 232, 232)#임시 흰색 R: 232 G: 232 B: 235
     image = cam.getImage()
     if image is None:#첫 프레임 에러 방지용
         return UNKNOWN, False
@@ -166,57 +166,35 @@ def filter_angle(new_value: float):
 
 def process_sick_data(sick_dev: Lidar):
     global sick_width, sick_fov
-    image = sick_dev.getRangeImage() #sick(lidar)의 거리값
+    HALF_AREA = 20 #정면 영역 제한
+    image = sick_dev.getRangeImage()
     if not image or sick_width <= 0:
-        return UNKNOWN, True, True
-    mid = int(sick_width / 2)
+        return UNKNOWN, 0.0
     
-    #시뮬레이션 환경에 맞게 변경 예정
-    CENTER_HALF = 15 #정면 영역의 절반 폭
-    LANE_WIDTH = 35 #옆 차선을 검사할 폭
-    #
+    sumx = 0
+    collision_count = 0
+    obstacle_dist = 0.0
 
-    #3개 Zone의 시작과 끝 인덱스 계산
-    #1. 중앙영역 검사
-    center_start = max(0, mid - CENTER_HALF)
-    center_end = min(sick_width, mid + CENTER_HALF)
-    #2. 왼쪽영역 검사
-    left_start = max(0, center_start - LANE_WIDTH)
-    left_end = center_start
-    #3. 오른쪽영역 검사
-    right_start = center_end + LANE_WIDTH
-    right_end = min(sick_width, center_end + LANE_WIDTH)
+    start = int(sick_width / 2 - HALF_AREA)
+    end = int(sick_width / 2 + HALF_AREA)
 
-    #초기 상태 설정
-    front_dist = UNKNOWN
-    left_clear = True
-    right_clear = True
+    if start < 0: start = 0
+    if end > len(image): end = len(image)
 
-    SAFE_DIST = 20.0 #전방에 장애물 있다고 판단할 거리
-    SIDE_SAFE_DIST = 15.0 #차선 변경시 옆 차선이 비어있다고 판달할 안전거리
-    
-    #정면 검사
-    min_front_dist = 999.0
-    for x in range(center_start):
+    for x in range(start, end):
         r = image[x]
-        if r <  SAFE_DIST:
-            if r < min_front_dist:
-                min_front_dist = r
-    if min_front_dist != 999.0:
-        front_dist = min_front_dist #거리가 가장 가까운 장애물 거리 저장
+        if r < 20.0: 
+                    sumx += x
+                    collision_count += 1
+                    obstacle_dist += r
+
+    if collision_count == 0:
+        return UNKNOWN, 0.0
     
-    #왼쪽 차선 검사
-    for x in range(left_start, left_end):
-        if image[x] < SIDE_SAFE_DIST:
-            left_clear = False
-            break #하나 발견되면 더 이상 검사가 필요없음
+    obstacle_dist /= collision_count
+    angle = ((sumx / collision_count) / sick_width - 0.5) * sick_fov
     
-    #오른쪽 차선 검사
-    for x in range(right_start, right_end):
-        if image[x] < SIDE_SAFE_DIST:
-            right_clear = False
-            break
-    return front_dist, left_clear, right_clear
+    return angle, obstacle_dist
 
 
 #속도조절
@@ -320,68 +298,67 @@ while driver.step() != -1:
             raw_angle, is_center_line = process_camera_image(camera)
             lane_line_angle = filter_angle(raw_angle)
 
-            #2. 라이다 데이터 받아오기
+            # 2. 라이다 데이터 받아오기
             if enable_collision_avoidance:
-                front_dist, left_clear, right_clear = process_sick_data(sick)
+                obstacle_angle, obstacle_dist = process_sick_data(sick)
             else:
-                front_dist, left_clear, right_clear  =  UNKNOWN, True, True
+                obstacle_angle, obstacle_dist = UNKNOWN, 0.0
             
-            #초기 제어값 설정(브레이크 OFF, 현재 핸들 각도 유지)
-            break_intensity = 0.0
-            steer = steering_angle
-
-            #3. 상화별 판단 로직
+            # 초기 제어값 설정
+            brake_intensity = 0.0
+            steer = steering_angle  
+            
+            # 3. 상황별 판단 로직
             if lane_line_angle != UNKNOWN:
-                #기본 주행 - 차선 유지 PID 조향각 계산
+                # 기본 주행 - 차선 유지 PID 조향각 계산
                 line_following_steering = applyPID(lane_line_angle)
                 
-                #충돌 방지 기능 ON and 앞에 장애물 발견된 경우
-                if enable_collision_avoidance and front_dist != UNKNOWN:
-                    #전방 15m 이내에 장애물이 다가온 경우 -> 회피
-                    if front_dist < 15.0:
-                        #Case 1 : 현재 1차선(왼쪽에 노란 중앙선)인 경우
-                        if is_center_line:
-                            if right_clear: #오른쪽 비어있으면 우측으로 차선 변경
-                                steer = steering_angle - 0.3
-                                PID_need_reset = True #True면 PID초기화, 차선변경동안 에러누적 방지를 위함
-                            else:
-                                #오른쪽으로 못가는 상황이면 브레이크
-                                calculated_brake = (15.0 - front_dist) / 10.0
-                                break_intensity = min(max(calculated_brake, 0.2), 1.0) #0.2~1.0으로 제한하기 위함
-                                print("충돌 위험, 회피 공간 없음. 긴급 제동")
-                        #Case 2 : 현재 2차선 혹은 그 외의 차선인 경우
-                        else:
-                            if left_clear:
-                                steer = steering_angle + 0.3
-                                PID_need_reset = True
-                                print("전방 차량(장애물) 발견! 왼쪽 차선으로 변경합니다.")
-                            elif right_clear:
-                                steer = steering_angle - 0.3
-                                PID_need_reset = True
-                                print("전방 차량(장애물) 발견! 오른쪽 차선으로 변경합니다.")
-                            else:
-                                calculated_brake = (15.0 - front_dist) / 10.0
-                                break_intensity = min(max(calculated_brake, 0.2), 1.0)
-                                print("충돌 위험, 회피 공간 없음. 긴급 제동")
-                        
-                        #전방 거리와 5m 이내로 가까우면 확실한 긴급제동
-                        if front_dist < 5.0:
-                            break_intensity = 1.0
-                            print("충돌 임박! 긴급 제동!")
+                # 충돌 방지 기능 ON and 앞에 장애물 발견된 경우
+                if enable_collision_avoidance and obstacle_angle != UNKNOWN:
                     
-                    #전방 차량(장애물)있어도 15m이상이면 차선유지
+                    # [복구] 원래 짜셨던 똑똑한 비례 회피 조향 로직
+                    obstacle_steering = steering_angle
+                    if 0.0 < obstacle_angle < 0.4:
+                        obstacle_steering = steering_angle + (obstacle_angle - 0.25) / max(0.001, obstacle_dist)
+                    elif -0.4 < obstacle_angle <= 0.0: 
+                        obstacle_steering = steering_angle + (obstacle_angle + 0.25) / max(0.001, obstacle_dist)
+
+                    # 전방 평균 거리가 15m 이내일 때 회피 판단 시작
+                    if obstacle_dist < 15.0:
+                        
+                        # [핵심] 1차선(노란선)인데 장애물이 있으면 -> 역주행 방지를 위해 무조건 오른쪽 강제 회피
+                        if is_center_line:
+                            steer = steering_angle - 0.3 
+                            PID_need_reset = True
+                            
+                        # 2차선이면 -> 원래 짜셨던 obstacle_steering을 활용하여 빈 곳으로 부드럽게 회피!
+                        else:
+                            steer = obstacle_steering
+                            PID_need_reset = True
+                            
+                        # 브레이크 비례 제어 (거리가 가까워질수록 브레이크 강하게)
+                        if obstacle_dist < 5.0:
+                            brake_intensity = 1.0
+                            print("충돌 임박! 긴급 제동!")
+                        else:
+                            calculated_brake = (15.0 - obstacle_dist) / 10.0
+                            brake_intensity = min(max(calculated_brake, 0.0), 0.5)
+                            
+                    #거리가 15m 이상이면 평소처럼 차선 유지
                     else:
                         steer = line_following_steering
-                #전방 차량(장애물) 아예 없는 경우 -> 차선 유지
+                
+                # 전방에 장애물이 아예 없으면 평소처럼 차선 유지
                 else:
                     steer = line_following_steering
-            #차선을 잃은 경우
+            
+            #차선을 잃은 경우 감속 방어 코드
             else:
-                break_intensity = 0.4
+                brake_intensity = 0.4
                 PID_need_reset = True
                 print("차선을 잃었습니다. 감속합니다.")
 
             #4. 행동을 차량에 전달
-            driver.setBrakeIntensity(break_intensity)
+            driver.setBrakeIntensity(brake_intensity)
             set_steering_angle(steer)
     i += 1
