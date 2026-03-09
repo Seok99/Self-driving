@@ -13,6 +13,11 @@ KD = 2.0
 
 PID_need_reset = False
 
+#차선 변경 완료 여부
+lane_changing = False
+lane_change_timer = 0
+LANE_CHANGE_DURATION = 30 #프레임 수, 테스트 후 조정
+
 #노이즈 제거용
 FILTER_SIZE = 3
 
@@ -69,7 +74,7 @@ def color_diff(a,b): #목표 색상과 오차 비교
         else: diff += -d
     return diff
 
-def process_camera_image(cam: Camera):
+def process_camera_image(cam: Camera, right_guardrail_dist=None):
     REF = (67,64,64)#Reference(목표) RGB(64,64,67):아주어두운 회색
     yellow_RGB = (95, 187, 203)
     white_RGB = (255, 255, 255)#임시 흰색
@@ -119,13 +124,18 @@ def process_camera_image(cam: Camera):
     #차선 중심 결정
     if left_avg is not None and right_avg is not None:
         lane_center = (left_avg + right_avg) / 2
+
     elif left_avg is not None:
-        lane_center = left_avg + lane_offset
+        if right_guardrail_dist is not None:
+            adjusted_offset = lane_offset * (right_guardrail_dist / 5.0)
+            lane_center = left_avg + adjusted_offset
+        else:
+            lane_center = left_avg + lane_offset
     elif right_avg is not None:
         lane_center = right_avg - lane_offset
     else:
         return UNKNOWN, False
-    
+
     lane_angle = ((lane_center / camera_width) - 0.5) * camera_fov
     return lane_angle, center_yellow_line
 
@@ -134,7 +144,7 @@ def set_steering_angle(wheel_angle : float):
     global steering_angle
     #변화율 제한 / 차량 최대 조향각 28.6도 == 0.5rad
     if wheel_angle - steering_angle > 0.1:
-        wheel_angle = steering_angle
+        wheel_angle = steering_angle + 0.1
     elif wheel_angle - steering_angle < -0.1:
         wheel_angle = steering_angle - 0.1
     #최대 조향각 제한
@@ -168,11 +178,11 @@ def process_sick_data(sick_dev: Lidar):
     global sick_width, sick_fov
     image = sick_dev.getRangeImage() #sick(lidar)의 거리값
     if not image or sick_width <= 0:
-        return UNKNOWN, True, True
+        return UNKNOWN, True, True, None
     mid = int(sick_width / 2)
     
     #시뮬레이션 환경에 맞게 변경 예정
-    CENTER_HALF = 15 #정면 영역의 절반 폭
+    CENTER_HALF = 20 #정면 영역의 절반 폭
     LANE_WIDTH = 35 #옆 차선을 검사할 폭
     #
 
@@ -193,7 +203,7 @@ def process_sick_data(sick_dev: Lidar):
     right_clear = True
 
     SAFE_DIST = 20.0 #전방에 장애물 있다고 판단할 거리
-    SIDE_SAFE_DIST = 15.0 #차선 변경시 옆 차선이 비어있다고 판달할 안전거리
+    SIDE_SAFE_DIST = 5.0 #차선 변경시 옆 차선이 비어있다고 판달할 안전거리
     
     #정면 검사
     min_front_dist = 999.0
@@ -216,7 +226,14 @@ def process_sick_data(sick_dev: Lidar):
         if image[x] < SIDE_SAFE_DIST:
             right_clear = False
             break
-    return front_dist, left_clear, right_clear
+    # 오른쪽 가드레일 거리 측정
+    GUARDRAIL_START = 140
+    right_guardrail_dist = None
+    for x in range(GUARDRAIL_START, sick_width):
+        if image[x] != float('inf') and image[x] < 10.0:
+            right_guardrail_dist = image[x]
+            break
+    return front_dist, left_clear, right_clear, right_guardrail_dist
 
 
 #속도조절
@@ -316,15 +333,15 @@ while driver.step() != -1:
     if i % max(1, int(TIME_STEP / max(1, basic_ts))) == 0:
         if autodrive and has_camera:
             
-            #1. 카메라 데이터 받아오기 
-            raw_angle, is_center_line = process_camera_image(camera)
-            lane_line_angle = filter_angle(raw_angle)
-
-            #2. 라이다 데이터 받아오기
+            #1. 라이다 데이터 받아오기
             if enable_collision_avoidance:
-                front_dist, left_clear, right_clear = process_sick_data(sick)
+                front_dist, left_clear, right_clear, right_guardrail_dist = process_sick_data(sick)
             else:
-                front_dist, left_clear, right_clear  =  UNKNOWN, True, True
+                front_dist, left_clear, right_clear, right_guardrail_dist = UNKNOWN, True, True, None
+
+            #2. 카메라 데이터 받아오기 
+            raw_angle, is_center_line = process_camera_image(camera, right_guardrail_dist)
+            lane_line_angle = filter_angle(raw_angle)
             
             #초기 제어값 설정(브레이크 OFF, 현재 핸들 각도 유지)
             break_intensity = 0.0
@@ -338,12 +355,21 @@ while driver.step() != -1:
                 #충돌 방지 기능 ON and 앞에 장애물 발견된 경우
                 if enable_collision_avoidance and front_dist != UNKNOWN:
                     #전방 15m 이내에 장애물이 다가온 경우 -> 회피
-                    if front_dist < 15.0:
+                    if lane_changing:
+                        lane_change_timer -= 1
+                        if lane_change_timer <= 0:
+                            lane_changing = False
+                            PID_need_reset = True
+                            print("차선 변경 완료, 정상 주행 복귀")
+                    elif front_dist < 15.0:
                         #Case 1 : 현재 1차선(왼쪽에 노란 중앙선)인 경우
                         if is_center_line:
                             if right_clear: #오른쪽 비어있으면 우측으로 차선 변경
-                                steer = steering_angle - 0.3
+                                steer = steering_angle + 0.3
+                                lane_changing = True
+                                lane_change_timer = LANE_CHANGE_DURATION
                                 PID_need_reset = True #True면 PID초기화, 차선변경동안 에러누적 방지를 위함
+                                print(f"현재 steering_angle: {steering_angle}, steer: {steer}")
                             else:
                                 #오른쪽으로 못가는 상황이면 브레이크
                                 calculated_brake = (15.0 - front_dist) / 10.0
@@ -352,11 +378,15 @@ while driver.step() != -1:
                         #Case 2 : 현재 2차선 혹은 그 외의 차선인 경우
                         else:
                             if left_clear:
-                                steer = steering_angle + 0.3
+                                steer = steering_angle - 0.3
+                                lane_changing = True
+                                lane_change_timer = LANE_CHANGE_DURATION
                                 PID_need_reset = True
                                 print("전방 차량(장애물) 발견! 왼쪽 차선으로 변경합니다.")
                             elif right_clear:
-                                steer = steering_angle - 0.3
+                                steer = steering_angle + 0.3
+                                lane_changing = True
+                                lane_change_timer = LANE_CHANGE_DURATION
                                 PID_need_reset = True
                                 print("전방 차량(장애물) 발견! 오른쪽 차선으로 변경합니다.")
                             else:
