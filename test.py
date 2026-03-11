@@ -1,417 +1,490 @@
 from vehicle import Driver
-from controller import Camera, Lidar, Keyboard
+from controller import Camera, Lidar, GPS, Keyboard
 import math
-X,Y,Z = 0,1,2
+
+# ─────────────────────────────────────────────
+#  기본 설정
+# ─────────────────────────────────────────────
+X, Y, Z = 0, 1, 2
 TIME_STEP = 50
 UNKNOWN = 9999.99
 
-#PID제어 알고리즘
-"시뮬레이션 후 조정 필요"
+# ── PID 게인 (시뮬레이션 후 조정 권장) ──
 KP = 0.25
 KI = 0.006
 KD = 2.0
-
 PID_need_reset = False
 
-#차선 변경 완료 여부
-lane_changing = False
-lane_change_timer = 0
-LANE_CHANGE_DURATION = 30 #프레임 수, 테스트 후 조정
-
-#노이즈 제거용
+# ── 이동 평균 필터 크기 ──
 FILTER_SIZE = 3
 
-#flags
-has_gps = False
-has_camera = False
+# ─────────────────────────────────────────────
+#  플래그
+# ─────────────────────────────────────────────
+has_gps               = False
+has_camera            = False
 enable_collision_avoidance = False
 
-#Lidar
-sick = None
-sick_width = -1
-sick_height = -1
-sick_fov = -1.0
-
-#Camera
-camera = None
-camera_width = -1
+# ─────────────────────────────────────────────
+#  센서 객체 / 변수
+# ─────────────────────────────────────────────
+camera        = None
+camera_width  = -1
 camera_height = -1
-camera_fov = -1.0
+camera_fov    = -1.0
+lane_offset   = 100   # 카메라 초기화 전 기본값 (오류 방지)
 
+sick          = None
+sick_width    = -1
+sick_fov      = -1.0
 
-#State
-speed = 0.0
+gps           = None
+gps_coords    = [0.0, 0.0, 0.0]
+gps_speed     = 0.0
+
+# ─────────────────────────────────────────────
+#  주행 상태
+# ─────────────────────────────────────────────
+speed          = 0.0
 steering_angle = 0.0
-manul_steering = 0 #수동용으로 보류중
-autodrive = True
+autodrive      = True
 
-#도움말 노출
+# ── 차선 변경 상태 머신 ──
+# 'follow' : 차선 유지(기본)
+# 'changing': 차선 변경 중 (카운터 사용)
+LANE_STATE_FOLLOW    = 'follow'
+LANE_STATE_TURN_OUT  = 'turn_out'   # 1단계 : 차선 방향으로 꺾기
+LANE_STATE_TURN_IN   = 'turn_in'    # 2단계 : 반대 방향으로 복귀
+lane_state           = LANE_STATE_FOLLOW
+lane_change_counter  = 0
+LANE_CHANGE_STEPS    = 15   # 1단계 / 2단계 각각 30스텝 (총 약 3초)
+lane_change_steer    = 0.0  # 현재 단계의 조향각
+lane_change_return   = 0.0  # 2단계(복귀) 조향각
+
+# ─────────────────────────────────────────────
+#  색상 기준값  (BGR 순서 — Webots Camera API)
+# ─────────────────────────────────────────────
+YELLOW_REF = (95, 187, 203)   # 노란 중앙선
+WHITE_REF  = (235, 232, 232)  # 흰 차선
+
+# 흰선은 조명 변화가 크므로 허용 오차를 넉넉하게 설정
+YELLOW_THRESHOLD = 30
+WHITE_THRESHOLD  = 50   # ← 기존 30에서 50으로 상향 (흰선 인식 핵심 수정)
+
+# ─────────────────────────────────────────────
+#  유틸
+# ─────────────────────────────────────────────
 def print_help():
-    print("You can drive this car")
-    print("Select the 3D window and then use the cursor key to:")
-    print("[UP]/[DOWN] - accelerate/slow down")
+    print("=== 자율주행 컨트롤러 ===")
+    print("[UP]/[DOWN]  : 속도 +5 / -5 km/h")
+    print("[A]          : 자동 주행 복귀")
 
-#자동운전 불가능이면 공지하기
-def set_autodrive(onoff : bool):
-    global autodrive
-    if autodrive == onoff:
-        return
-    autodrive = onoff
-    if autodrive == False:
-        print("hit [a]or[A] to return auto-drive mode")
-    else:
-        if has_camera:
-            print("switching to auto-drive")
-        else:
-            print("impossible to switching auto-drive on without camera")
-            
 
-def color_diff(a,b): #목표 색상과 오차 비교
-    diff = 0
-    for i in range(3):
-        d = a[i] - b[i]
-        if d>0: diff +=d
-        else: diff += -d
-    return diff
+def color_diff(a, b):
+    """두 BGR 색상 간의 L1 거리 계산."""
+    return sum(abs(a[i] - b[i]) for i in range(3))
 
-def process_camera_image(cam: Camera, right_guardrail_dist=None):
-    REF = (67,64,64)#Reference(목표) RGB(64,64,67):아주어두운 회색
-    yellow_RGB = (95, 187, 203)
-    white_RGB = (255, 255, 255)#임시 흰색
-    image = cam.getImage()
-    if image is None:#첫 프레임 에러 방지용
+
+# ─────────────────────────────────────────────
+#  카메라 처리
+# ─────────────────────────────────────────────
+def process_camera_image(cam: Camera):
+    """
+    노란선(중앙선)과 흰선(차선 경계)을 인식해
+    (차선 중심 각도, 현재_1차선_여부) 를 반환한다.
+
+    반환값:
+        lane_angle (float) : 양수=오른쪽 이탈, 음수=왼쪽 이탈
+        is_center_line (bool): 노란 중앙선이 왼쪽에 있으면 True (= 현재 1차선)
+    """
+    if camera_width <= 0 or camera_height <= 0:
         return UNKNOWN, False
-    center = camera_width /2
-    #위치에 따른 차선 파악(yellow, white)
-    yellow_left_sum = 0; yellow_left_count = 0
-    yellow_right_sum = 0; yellow_right_count = 0
-    white_left_sum = 0;   white_left_count = 0
-    white_right_sum = 0;  white_right_count = 0
 
-    for y in range(camera_height):
+    image = cam.getImage()
+    if image is None:
+        return UNKNOWN, False
+
+    center = camera_width / 2
+
+    # 화면 하단 40%만 검사 (노면 인식 정확도 향상)
+    y_start = int(camera_height * 0.6)
+
+    yellow_left_sum  = 0; yellow_left_count  = 0
+    yellow_right_sum = 0; yellow_right_count = 0
+    white_left_sum   = 0; white_left_count   = 0
+    white_right_sum  = 0; white_right_count  = 0
+
+    for y in range(y_start, camera_height):
         for x in range(camera_width):
-            b = Camera.imageGetBlue(image, camera_width, x, y)
+            b = Camera.imageGetBlue (image, camera_width, x, y)
             g = Camera.imageGetGreen(image, camera_width, x, y)
-            r = Camera.imageGetRed(image, camera_width, x, y)
-            if color_diff((b,g,r), yellow_RGB) <30:
+            r = Camera.imageGetRed  (image, camera_width, x, y)
+
+            if color_diff((b, g, r), YELLOW_REF) < YELLOW_THRESHOLD:
                 if x < center:
-                    yellow_left_sum += x;  yellow_left_count += 1
+                    yellow_left_sum  += x; yellow_left_count  += 1
                 else:
                     yellow_right_sum += x; yellow_right_count += 1
-            elif color_diff((b,g,r),white_RGB) <30:
+
+            elif color_diff((b, g, r), WHITE_REF) < WHITE_THRESHOLD:
                 if x < center:
-                    white_left_sum += x; white_left_count += 1
+                    white_left_sum  += x; white_left_count  += 1
                 else:
-                    white_right_sum += x; white_right_count +=1
-    center_yellow_line = (yellow_left_count > 0)
-    # 왼쪽/오른쪽 선의 평균 계산
-    # 왼쪽 - 노란색 우선, 없으면 흰색
-    # 오른쪽 - 흰색 우선, 없으면 노란색
+                    white_right_sum += x; white_right_count += 1
+
+    # 노란 중앙선이 왼쪽에 있으면 → 1차선 주행 중
+    is_center_line = (yellow_left_count > 0)
+
+    # ── 좌/우 차선 평균 x 좌표 결정 ──
+    # 왼쪽 : 노란선 우선, 없으면 흰선
     if yellow_left_count > 0:
         left_avg = yellow_left_sum / yellow_left_count
     elif white_left_count > 0:
         left_avg = white_left_sum / white_left_count
     else:
         left_avg = None
-    
+
+    # 오른쪽 : 흰선 우선, 없으면 노란선
     if white_right_count > 0:
         right_avg = white_right_sum / white_right_count
     elif yellow_right_count > 0:
         right_avg = yellow_right_sum / yellow_right_count
-    else :
+    else:
         right_avg = None
-    
-    #차선 중심 결정
+
+    # ── 차선 중심 계산 ──
     if left_avg is not None and right_avg is not None:
         lane_center = (left_avg + right_avg) / 2
-
     elif left_avg is not None:
-        if right_guardrail_dist is not None:
-            adjusted_offset = lane_offset * (right_guardrail_dist / 5.0)
-            lane_center = left_avg + adjusted_offset
-        else:
-            lane_center = left_avg + lane_offset
+        lane_center = left_avg + lane_offset   # 오른쪽 선이 안 보이면 왼쪽 선 기준으로 추정
     elif right_avg is not None:
-        lane_center = right_avg - lane_offset
+        lane_center = right_avg - lane_offset  # 왼쪽 선이 안 보이면 오른쪽 선 기준으로 추정
     else:
-        return UNKNOWN, False
+        return UNKNOWN, False                  # 양쪽 모두 안 보이면 UNKNOWN
 
     lane_angle = ((lane_center / camera_width) - 0.5) * camera_fov
-    return lane_angle, center_yellow_line
+    return lane_angle, is_center_line
 
-#차량 바퀴 각도
-def set_steering_angle(wheel_angle : float):
-    global steering_angle
-    #변화율 제한 / 차량 최대 조향각 28.6도 == 0.5rad
-    if wheel_angle - steering_angle > 0.1:
-        wheel_angle = steering_angle + 0.1
-    elif wheel_angle - steering_angle < -0.1:
-        wheel_angle = steering_angle - 0.1
-    #최대 조향각 제한
-    if wheel_angle > 0.5:
-        wheel_angle = 0.5
-    elif wheel_angle < -0.5:
-        wheel_angle  =  -0.5
-    driver.setSteeringAngle(wheel_angle)
 
-#센서 안정화
-_filter_initialized = False #필터 초기화
-_filter_buffer = [0.0] * FILTER_SIZE #3프레임 저장 후 평균계산하여 안정화를 위해
+# ─────────────────────────────────────────────
+#  이동 평균 필터
+# ─────────────────────────────────────────────
+_filter_buffer = [0.0] * FILTER_SIZE
 
 def filter_angle(new_value: float):
-    global _filter_initialized, _filter_buffer
-    if (not _filter_buffer) or new_value == UNKNOWN:
-        #초기 불균형 해소를 위해 미리 값 넣기
-        _filter_buffer = True
-        _filter_buffer = [0.0] * FILTER_SIZE
-    else:
-        for i in range(FILTER_SIZE-1):
-            #Filter_size 만큼 반복해서 넣기
-            _filter_buffer[i] = _filter_buffer[i+1]
-    #값 X -> return UNKNOWN
+    global _filter_buffer
     if new_value == UNKNOWN:
+        # UNKNOWN이 들어오면 버퍼 초기화 후 UNKNOWN 반환
+        _filter_buffer = [0.0] * FILTER_SIZE
         return UNKNOWN
-    _filter_buffer[FILTER_SIZE-1] = new_value
-    return sum(_filter_buffer) / FILTER_SIZE #평균값 반환
+    # 슬라이딩 윈도우
+    _filter_buffer = _filter_buffer[1:] + [new_value]
+    return sum(_filter_buffer) / FILTER_SIZE
 
+
+# ─────────────────────────────────────────────
+#  Lidar 처리  (3-Zone : 전방 / 왼쪽 차선 / 오른쪽 차선)
+# ─────────────────────────────────────────────
 def process_sick_data(sick_dev: Lidar):
-    global sick_width, sick_fov
-    image = sick_dev.getRangeImage() #sick(lidar)의 거리값
+    """
+    반환값:
+        front_dist  (float) : 전방 최근접 장애물 거리 (없으면 UNKNOWN)
+        left_clear  (bool)  : 왼쪽 차선 안전 여부
+        right_clear (bool)  : 오른쪽 차선 안전 여부
+    """
+    image = sick_dev.getRangeImage()
     if not image or sick_width <= 0:
-        return UNKNOWN, True, True, None
-    mid = int(sick_width / 2)
-    
-    #시뮬레이션 환경에 맞게 변경 예정
-    CENTER_HALF = 20 #정면 영역의 절반 폭
-    LANE_WIDTH = 35 #옆 차선을 검사할 폭
-    #
+        return UNKNOWN, True, True
 
-    #3개 Zone의 시작과 끝 인덱스 계산
-    #1. 중앙영역 검사
-    center_start = max(0, mid - CENTER_HALF)
-    center_end = min(sick_width, mid + CENTER_HALF)
-    #2. 왼쪽영역 검사
-    left_start = max(0, center_start - LANE_WIDTH)
-    left_end = center_start
-    #3. 오른쪽영역 검사
-    right_start = center_end
-    right_end = min(sick_width, center_end + LANE_WIDTH)
+    mid         = sick_width // 2
+    CENTER_HALF = 20   # 전방 탐지 반폭 (인덱스)
+    LANE_WIDTH  = 35   # 옆 차선 탐지 폭 (인덱스)
+    SAFE_DIST   = 20.0 # 전방 위험 거리 (m)
+    SIDE_DIST   = 5.0  # 측면 위험 거리 (m)
 
-    #초기 상태 설정
+    c_start = max(0, mid - CENTER_HALF)
+    c_end   = min(sick_width, mid + CENTER_HALF)
+    l_start = max(0, c_start - LANE_WIDTH)
+    l_end   = c_start
+    r_start = c_end
+    r_end   = min(sick_width, c_end + LANE_WIDTH)
+
+    # 전방 최근접 거리
     front_dist = UNKNOWN
-    left_clear = True
-    right_clear = True
-
-    SAFE_DIST = 20.0 #전방에 장애물 있다고 판단할 거리
-    SIDE_SAFE_DIST = 5.0 #차선 변경시 옆 차선이 비어있다고 판달할 안전거리
-    
-    #정면 검사
-    min_front_dist = 999.0
-    for x in range(center_start, center_end):
+    for x in range(c_start, c_end):
         r = image[x]
-        if r <  SAFE_DIST:
-            if r < min_front_dist:
-                min_front_dist = r
-    if min_front_dist != 999.0:
-        front_dist = min_front_dist #거리가 가장 가까운 장애물 거리 저장
-    
-    #왼쪽 차선 검사
-    for x in range(left_start, left_end):
-        if image[x] < SIDE_SAFE_DIST:
-            left_clear = False
-            break #하나 발견되면 더 이상 검사가 필요없음
-    
-    #오른쪽 차선 검사
-    for x in range(right_start, right_end):
-        if image[x] < SIDE_SAFE_DIST:
-            right_clear = False
-            break
-    # 오른쪽 가드레일 거리 측정
-    GUARDRAIL_START = 140
-    right_guardrail_dist = None
-    for x in range(GUARDRAIL_START, sick_width):
-        if image[x] != float('inf') and image[x] < 10.0:
-            right_guardrail_dist = image[x]
-            break
-    return front_dist, left_clear, right_clear, right_guardrail_dist
+        if r < SAFE_DIST:
+            if front_dist == UNKNOWN or r < front_dist:
+                front_dist = r
+
+    # 왼쪽 차선 안전 여부
+    left_clear = all(image[x] >= SIDE_DIST for x in range(l_start, l_end))
+
+    # 오른쪽 차선 안전 여부
+    right_clear = all(image[x] >= SIDE_DIST for x in range(r_start, r_end))
+
+    return front_dist, left_clear, right_clear
 
 
-#속도조절
+# ─────────────────────────────────────────────
+#  조향 / 속도 제어
+# ─────────────────────────────────────────────
 def set_speed(kmh: float):
     global speed
-    if kmh > 200.0: #최대속도 제한
-        kmh = 200.0
+    kmh   = max(0.0, min(kmh, 200.0))
     speed = kmh
-    print(f"setting speed to {kmh:g} km/h")
-    driver.setCruisingSpeed(kmh) #차량 속도 조절
+    print(f"속도 설정: {kmh:g} km/h")
+    driver.setCruisingSpeed(kmh)
 
-#키보드 조절
-def Check_keyboard(kb: Keyboard):
-    key =  kb.getKey() #사용자가 누른키 코드를 key에 저장
+
+def set_steering_angle(wheel_angle: float):
+    """변화율 제한 + 최대 조향각 제한 적용."""
+    global steering_angle
+    # 변화율 제한 : 한 스텝에 최대 ±0.1 rad
+    delta = wheel_angle - steering_angle
+    if delta > 0.1:
+        wheel_angle = steering_angle + 0.1
+    elif delta < -0.1:
+        wheel_angle = steering_angle - 0.1
+    # 절대 한계 ±0.5 rad
+    wheel_angle   = max(-0.5, min(0.5, wheel_angle))
+    steering_angle = wheel_angle
+    driver.setSteeringAngle(wheel_angle)
+
+
+# ─────────────────────────────────────────────
+#  PID 제어기
+# ─────────────────────────────────────────────
+def applyPID(lane_angle: float):
+    global PID_need_reset
+    if not hasattr(applyPID, "oldValue"):  applyPID.oldValue  = 0.0
+    if not hasattr(applyPID, "integral"):  applyPID.integral  = 0.0
+
+    if PID_need_reset:
+        applyPID.oldValue = lane_angle   # Derivative kick 방지
+        applyPID.integral = 0.0
+        PID_need_reset    = False
+
+    # 부호가 바뀌면 적분 초기화 (오버슈팅 방지)
+    if math.copysign(1.0, lane_angle) != math.copysign(1.0, applyPID.oldValue):
+        applyPID.integral = 0.0
+
+    diff = lane_angle - applyPID.oldValue
+
+    if -30 < applyPID.integral < 30:
+        applyPID.integral += lane_angle
+
+    applyPID.oldValue = lane_angle
+    return KP * lane_angle + KI * applyPID.integral + KD * diff
+
+
+# ─────────────────────────────────────────────
+#  키보드
+# ─────────────────────────────────────────────
+def check_keyboard(kb: Keyboard):
+    key = kb.getKey()
     if key == Keyboard.UP:
         set_speed(speed + 5.0)
     elif key == Keyboard.DOWN:
         set_speed(speed - 5.0)
+    elif key in (ord('A'), ord('a')):
+        global autodrive
+        autodrive = True
+        print("자동 주행 복귀")
 
-#PID제어기 / ex: 차선 이탈시 얼마나 벗어났는지 오차계산
-def applyPID(lane_angle: float):
-    global PID_need_reset
-    #static변수 생성 / hasattr : 함수안에 변수 있으면 True
-    if not hasattr(applyPID, "oldValue"):
-        applyPID.oldValue = 0.0 #oldValue가 없으면 생성
-    if not hasattr(applyPID, "integral"):
-        applyPID.integral = 0.0 #integral없으면 생성
-    #PID_need_reset == True면 PID초기화
-    if PID_need_reset:
-        applyPID.oldValue = lane_angle
-        applyPID.integral = 0.0
-        PID_need_reset = False
-    #copysign(x,y) = x의 절댓값, y의 부호를 반환한다.
-    if math.copysign(1.0, lane_angle) != math.copysign(1.0, applyPID.oldValue):
-        applyPID.integral = 0.0
-    diff = lane_angle - applyPID.oldValue
 
-    if -30 < applyPID.integral < 30:
-        applyPID.integral += lane_angle #적분 제한
-        #제한 이유 : 커질수록 핸들을 꺽는 각이 커지고, 차량 흔들림, 복구가 느림
-    applyPID.oldValue = lane_angle
-    return KP * lane_angle + KI * applyPID.integral + KD * diff
+# ─────────────────────────────────────────────
+#  GPS
+# ─────────────────────────────────────────────
+def compute_gps_speed():
+    global gps_speed, gps_coords
+    gps_coords = list(gps.getValues())
+    gps_speed  = gps.getSpeed() * 3.6   # m/s → km/h
 
-#driver선언
+
+# ═════════════════════════════════════════════
+#  초기화
+# ═════════════════════════════════════════════
 driver = Driver()
 
-
-#센서 가져오기
-#1 카메라
+# 카메라
 try:
-    camera = Camera("camera")
+    camera        = Camera("camera")
     camera.enable(TIME_STEP)
-    has_camera = True
-    camera_width = camera.getWidth()
+    camera_width  = camera.getWidth()
     camera_height = camera.getHeight()
-    camera_fov = camera.getFov()
-    lane_offset = camera_width * 0.25 #차선 중앙 값, 테스트 후 0.25값 조절 필요
-except Exception as e: #카메라 가져오기 실패
-    print(type(e), e) #오류 출력
-    has_camera = False
-    camera = None
-
-#2 Lidar센서
-try:
-    sick = Lidar('Sick LMS 291')
-    sick.enable(TIME_STEP)
-    enable_collision_avoidance = True
-    sick_width = sick.getHorizontalResolution()
-    scik_height = sick.getMaxRange()
-    sick_fov = sick.getFov()
+    camera_fov    = camera.getFov()
+    lane_offset   = camera_width * 0.25  # 한쪽 선만 보일 때 차선 폭 추정값
+    has_camera    = True
+    print("카메라 초기화 완료")
 except Exception as e:
-    print(type(e), e)
-    enable_collision_avoidance = False
-    sick = None
+    print(f"카메라 초기화 실패: {e}")
+    has_camera = False
 
-#도움말 노출
+# Lidar
+try:
+    sick       = Lidar("Sick LMS 291")
+    sick.enable(TIME_STEP)
+    sick_width = sick.getHorizontalResolution()
+    sick_fov   = sick.getFov()
+    enable_collision_avoidance = True
+    print("Lidar 초기화 완료")
+except Exception as e:
+    print(f"Lidar 초기화 실패: {e}")
+    enable_collision_avoidance = False
+
+# GPS (선택)
+try:
+    gps = GPS("gps")
+    gps.enable(TIME_STEP)
+    has_gps = True
+    print("GPS 초기화 완료")
+except Exception as e:
+    print(f"GPS 초기화 실패 (없어도 동작): {e}")
+    has_gps = False
+
 print_help()
 
-#키보드
+if has_camera:
+    set_speed(50.0)
+
 kb = Keyboard()
 kb.enable(TIME_STEP)
 
-#Main
+basic_ts = int(driver.getBasicTimeStep()) if hasattr(driver, 'getBasicTimeStep') else TIME_STEP
+
+# ═════════════════════════════════════════════
+#  메인 루프
+# ═════════════════════════════════════════════
 i = 0
 
-#센서 동기화를 위해 Webots의 world 기본 간격(BasicTimeStep)을 사용, 없으면 지정한 간격 사용
-if hasattr(driver, 'getBasicTimeStep'):
-    basic_ts = int(driver.getBasicTimeStep())
-else:
-    basic_ts = TIME_STEP
-
-#LOOP
 while driver.step() != -1:
-    Check_keyboard(kb) #키보드 입력 확인
-    
-    #센서 업데이트 주기 동기화
+    check_keyboard(kb)
+
     if i % max(1, int(TIME_STEP / max(1, basic_ts))) == 0:
+
         if autodrive and has_camera:
-            
-            #1. 라이다 데이터 받아오기
+
+            # ── 1. 센서 데이터 수집 ──
+            raw_angle, is_center_line = process_camera_image(camera)
+            lane_line_angle           = filter_angle(raw_angle)
+
             if enable_collision_avoidance:
-                front_dist, left_clear, right_clear, right_guardrail_dist = process_sick_data(sick)
+                front_dist, left_clear, right_clear = process_sick_data(sick)
             else:
-                front_dist, left_clear, right_clear, right_guardrail_dist = UNKNOWN, True, True, None
+                front_dist, left_clear, right_clear = UNKNOWN, True, True
 
-            #2. 카메라 데이터 받아오기 
-            raw_angle, is_center_line = process_camera_image(camera, right_guardrail_dist)
-            lane_line_angle = filter_angle(raw_angle)
-            
-            #초기 제어값 설정(브레이크 OFF, 현재 핸들 각도 유지)
-            break_intensity = 0.0
-            steer = steering_angle
+            # ── 2. 제어값 초기화 ──
+            brake_intensity = 0.0
+            steer           = steering_angle  # 기본: 현재 각도 유지
 
-            #3. 상화별 판단 로직
-            if lane_line_angle != UNKNOWN:
-                #기본 주행 - 차선 유지 PID 조향각 계산
-                line_following_steering = applyPID(lane_line_angle)
-                
-                #충돌 방지 기능 ON and 앞에 장애물 발견된 경우
-                if enable_collision_avoidance and front_dist != UNKNOWN:
-                    #전방 15m 이내에 장애물이 다가온 경우 -> 회피
-                    if lane_changing:
-                        lane_change_timer -= 1
-                        if lane_change_timer <= 0:
-                            lane_changing = False
-                            PID_need_reset = True
-                            print("차선 변경 완료, 정상 주행 복귀")
-                    elif front_dist < 15.0:
-                        #Case 1 : 현재 1차선(왼쪽에 노란 중앙선)인 경우
-                        if is_center_line:
-                            if right_clear: #오른쪽 비어있으면 우측으로 차선 변경
-                                steer = steering_angle + 0.3
-                                lane_changing = True
-                                lane_change_timer = LANE_CHANGE_DURATION
-                                PID_need_reset = True #True면 PID초기화, 차선변경동안 에러누적 방지를 위함
-                                print(f"현재 steering_angle: {steering_angle}, steer: {steer}")
-                            else:
-                                #오른쪽으로 못가는 상황이면 브레이크
-                                calculated_brake = (15.0 - front_dist) / 10.0
-                                break_intensity = min(max(calculated_brake, 0.2), 1.0) #0.2~1.0으로 제한하기 위함
-                                print("충돌 위험, 회피 공간 없음. 긴급 제동 / case 1")
-                        #Case 2 : 현재 2차선 혹은 그 외의 차선인 경우
-                        else:
-                            if left_clear:
-                                steer = steering_angle - 0.3
-                                lane_changing = True
-                                lane_change_timer = LANE_CHANGE_DURATION
-                                PID_need_reset = True
-                                print("전방 차량(장애물) 발견! 왼쪽 차선으로 변경합니다.")
-                            elif right_clear:
-                                steer = steering_angle + 0.3
-                                lane_changing = True
-                                lane_change_timer = LANE_CHANGE_DURATION
-                                PID_need_reset = True
-                                print("전방 차량(장애물) 발견! 오른쪽 차선으로 변경합니다.")
-                            else:
-                                calculated_brake = (15.0 - front_dist) / 10.0
-                                break_intensity = min(max(calculated_brake, 0.2), 1.0)
-                                print("충돌 위험, 회피 공간 없음. 긴급 제동 / case 2")
-                        
-                        #전방 거리와 5m 이내로 가까우면 확실한 긴급제동
+            # ══════════════════════════════════════
+            #  상태 머신 : 1단계 - 차선 방향으로 꺾기
+            # ══════════════════════════════════════
+            if lane_state == LANE_STATE_TURN_OUT:
+                lane_change_counter -= 1
+                steer = lane_change_steer   # 꺾는 방향 고정
+
+                # 1단계 완료 → 2단계(반대 방향 복귀)로 전환
+                if lane_change_counter <= 0:
+                    lane_state          = LANE_STATE_TURN_IN
+                    lane_change_counter = LANE_CHANGE_STEPS
+                    steer               = lane_change_return
+                    print("차선 변경 2단계: 핸들 복귀 중...")
+
+                # ※ 차선 변경 중 Lidar 전방 판단 비활성화
+                #   꺾인 방향으로 가드레일을 장애물로 오인하기 때문
+                # (brake_intensity 는 0.0 유지)
+
+            # ══════════════════════════════════════
+            #  상태 머신 : 2단계 - 반대 방향으로 핸들 복귀
+            # ══════════════════════════════════════
+            elif lane_state == LANE_STATE_TURN_IN:
+                lane_change_counter -= 1
+                steer = lane_change_return  # 복귀 방향 고정
+
+                # 2단계 완료 → 차선 유지(follow)로 복귀
+                if lane_change_counter <= 0:
+                    lane_state     = LANE_STATE_FOLLOW
+                    PID_need_reset = True
+                    print("차선 변경 완료, 차선 유지 모드로 복귀")
+
+                # (brake_intensity 는 0.0 유지)
+
+            # ══════════════════════════════════════
+            #  상태 머신 : 차선 유지 (기본 주행)
+            # ══════════════════════════════════════
+            elif lane_state == LANE_STATE_FOLLOW:
+
+                if lane_line_angle != UNKNOWN:
+                    # 기본 PID 조향
+                    line_steer = applyPID(lane_line_angle)
+
+                    # ── 전방 장애물 감지 ──
+                    if enable_collision_avoidance and front_dist != UNKNOWN:
+
+                        # 5m 이내 : 무조건 긴급 제동
                         if front_dist < 5.0:
-                            break_intensity = 1.0
+                            brake_intensity = 1.0
+                            steer           = line_steer
                             print("충돌 임박! 긴급 제동!")
-                    
-                    #전방 차량(장애물)있어도 15m이상이면 차선유지
-                    else:
-                        steer = line_following_steering
-                #전방 차량(장애물) 아예 없는 경우 -> 차선 유지
-                else:
-                    steer = line_following_steering
-            #차선을 잃은 경우
-            else:
-                break_intensity = 0.4
-                PID_need_reset = True
-                print("차선을 잃었습니다. 감속합니다.")
 
-            #4. 행동을 차량에 전달
-            driver.setBrakeIntensity(break_intensity)
+                        # 15m 이내 : 차선 변경 시도
+                        elif front_dist < 15.0:
+                            if is_center_line:
+                                # 현재 1차선 → 오른쪽으로만 변경 가능
+                                if right_clear:
+                                    lane_state          = LANE_STATE_TURN_OUT
+                                    lane_change_counter = LANE_CHANGE_STEPS
+                                    lane_change_steer   = min(steering_angle + 0.15, 0.5)   # 1단계: 오른쪽
+                                    lane_change_return  = max(steering_angle - 0.15, -0.5)  # 2단계: 왼쪽 복귀
+                                    PID_need_reset      = True
+                                    print("전방 장애물! 오른쪽 차선으로 변경")
+                                else:
+                                    # 오른쪽도 막혀있으면 비례 제동
+                                    brake_intensity = min(max((15.0 - front_dist) / 10.0, 0.2), 1.0)
+                                    steer           = line_steer
+                                    print("회피 불가 - 제동 (1차선)")
+                            else:
+                                # 현재 2차선 이상 → 왼쪽 우선
+                                if left_clear:
+                                    lane_state          = LANE_STATE_TURN_OUT
+                                    lane_change_counter = LANE_CHANGE_STEPS
+                                    lane_change_steer   = max(steering_angle - 0.15, -0.5)  # 1단계: 왼쪽
+                                    lane_change_return  = min(steering_angle + 0.15, 0.5)   # 2단계: 오른쪽 복귀
+                                    PID_need_reset      = True
+                                    print("전방 장애물! 왼쪽 차선으로 변경")
+                                elif right_clear:
+                                    lane_state          = LANE_STATE_TURN_OUT
+                                    lane_change_counter = LANE_CHANGE_STEPS
+                                    lane_change_steer   = min(steering_angle + 0.15, 0.5)   # 1단계: 오른쪽
+                                    lane_change_return  = max(steering_angle - 0.15, -0.5)  # 2단계: 왼쪽 복귀
+                                    PID_need_reset      = True
+                                    print("전방 장애물! 오른쪽 차선으로 변경")
+                                else:
+                                    brake_intensity = min(max((15.0 - front_dist) / 10.0, 0.2), 1.0)
+                                    steer           = line_steer
+                                    print("회피 불가 - 제동 (2차선)")
+                        else:
+                            # 장애물 있어도 15m 이상이면 차선 유지
+                            steer = line_steer
+
+                    else:
+                        # 장애물 없음 → 순수 차선 추종
+                        steer = line_steer
+
+                else:
+                    # ── 차선 상실 ──
+                    brake_intensity = 0.4
+                    PID_need_reset  = True
+                    print("차선 상실 - 감속")
+
+            # ── 3. 차량에 명령 전달 ──
+            driver.setBrakeIntensity(brake_intensity)
             set_steering_angle(steer)
+
+        # ── GPS 업데이트 ──
+        if has_gps:
+            compute_gps_speed()
+
     i += 1

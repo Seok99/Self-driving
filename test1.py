@@ -73,7 +73,7 @@ def color_diff(a,b): #목표 색상과 오차 비교
 def process_camera_image(cam: Camera):
     REF = (67,64,64)#Reference(목표) RGB(64,64,67):아주어두운 회색
     yellow_RGB = (95, 187, 203)
-    white_RGB = (255, 255, 255)#임시 흰색
+    white_RGB = (235, 232, 232)#임시 흰색
     image = cam.getImage()
     if image is None:#첫 프레임 에러 방지용
         return UNKNOWN, False
