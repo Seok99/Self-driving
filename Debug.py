@@ -12,3 +12,9 @@ UNKNOWN = 9999.99
 #3. 가드레일이 있으면 DistanceSensor을 이용해서 거리 이격하여 주행
 # but 주행 중, 램프(Ramp)처럼 본선에 합류하는 거나 빠지는 길이 있다면?
 #4. setCruisingSpeed로 속도를 조절하는데 setBrakeIntensity가 1.0이여도 왜 차량이 멈추지 않는지?
+
+"""
+1. 중앙선(노란선) 인식해서 중앙선 침범 못하게 저지
+2. 
+ 속도 제어는 브레이크 밟는 알고리즘을 setCruisingSpeed에 대입해서 조절 통일 
+"""
