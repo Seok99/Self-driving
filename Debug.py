@@ -1,5 +1,5 @@
 from vehicle import Driver
-from controller import Camer, Lidar, GPS, Keyboard, DistanceSensor
+from controller import Camera, Lidar, GPS, Keyboard, DistanceSensor
 import math
 import numpy as np
 import cv2
@@ -123,4 +123,70 @@ def filter_angle(new_angle):
 
 # ── 차선 인식 (HSV 방식 적용) ────────────────────────
 def detect_lane(img):
-    roi = img[int(cam_height*0.65)]
+    roi = img[int(camera_height*0.65):camera_height-1]
+    hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+    white_mask = cv2.inRange(hsv, LOWER_WHITE, UPPER_WHITE)
+    yellow_mask = cv2.inRange(hsv, LOWER_YELLOW, UPPER_YELLOW)
+
+    white_pixels = np.where(white_mask>0)
+    yellow_pixels = np.where(yellow_mask>0)
+
+    white_x = UNKNOWN
+    yellow_x = UNKNOWN
+
+    if len(white_pixels[1]) > 40:
+        white_x = int(np.mean(white_pixels[1]))
+    
+    if len(yellow_pixels[1]) > 40:
+        yellow_x = int(np.mean(yellow_pixels[1]))
+    
+    return white_x,yellow_x
+
+#── Lidar 처리 ──────────────
+def process_lidar():
+    ranges = np.array(sick.getRangeImage())
+    ranges = np.nan_to_num(ranges,nan=50,posinf=50)
+
+    n = len(ranges)
+
+    front = np.min(ranges[int(n*0.45):int(n*0.55)])
+    left = np.min(ranges[int(n*0.6):int(n*0.8)])
+    right = np.min(ranges[int(n*0.2):int(n*0.4)])
+
+    return front,left,right
+
+#── 속도 자동 제어 ──────────────
+def auto_speed(front):
+    if drive_state == STATE_AVOID:
+        return 10
+    if front < 10:
+        return 15
+    
+    return 30
+
+#── 센서 초기화 ──────────────
+driver = Driver()
+if hasattr(driver, 'getBasicTimeStep'):
+    basic_ts = int(driver.getBasicTimeStep())
+else:
+    basic_ts = TIME_STEP
+
+#left_Camera
+try:
+    left_camera = Camera('left_camera')
+    left_camera.enable(TIME_STEP)
+    camera_width = left_camera.getWidth()
+    camera_height = left_camera.getHeight()
+    has_camera = True
+    print("Left Camera initialized")
+except Exception:
+    left_camera = None
+    print("Warning: left_Camera not found")
+#right_Camera
+try:
+    right_camera = Camera('right_camrea')
+    right_camera.enable(TIME_STEP)
+    """
+    1. cam_width ->camera_width로 변경
+    2. right_camera의 try에서 왜 if를 사용하는지
+    """
