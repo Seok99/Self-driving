@@ -221,7 +221,7 @@ while driver.step() != -1:
     check_keyboard(kb)
 
     if i % max(1, int (TIME_STEP / max(1, basic_ts))) == 0:
-        front, left_dist, right_dist = process_lidar
+        front, left_dist, right_dist = process_lidar()
 
         white_list = []
         yellow_list = []
