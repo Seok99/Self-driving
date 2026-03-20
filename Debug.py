@@ -96,6 +96,8 @@ def applyPID(error):
         applyPID.integral = 0
     
     diff = error - applyPID.prev
+    applyPID.integral += error
+
     applyPID.prev = error
 
     return KP*error + KI*applyPID.integral + KD*diff
@@ -181,12 +183,103 @@ try:
     print("Left Camera initialized")
 except Exception:
     left_camera = None
-    print("Warning: left_Camera not found")
+    print("Warning: Left_Camera not found")
 #right_Camera
 try:
-    right_camera = Camera('right_camrea')
+    right_camera = Camera('right_camera')
     right_camera.enable(TIME_STEP)
-    """
-    1. cam_width ->camera_width로 변경
-    2. right_camera의 try에서 왜 if를 사용하는지
-    """
+    if camera_width == -1:
+        camera_width = right_camera.getWidth()
+        camera_height = right_camera.getHeight()
+    has_camera = True
+    print("Right Camera initialized")
+except Exception:
+    right_camera = None
+    print("Warning: Right_Camera not found")
+
+#Lidar
+try:
+    sick = Lidar('Sick LMS 291')
+    sick.enable(TIME_STEP)
+    collision_avoidance = True
+    sick_width = sick.getHorizontalResolution()
+    sick_fov = sick.getFov()
+    print("Lidar initialized")
+except Exception:
+    collision_avoidance = False
+    sick = None
+
+print_help()
+
+kb = Keyboard()
+kb.enable(TIME_STEP)
+
+#── Main Loop ──────────────
+i = 0
+
+while driver.step() != -1:
+    check_keyboard(kb)
+
+    if i % max(1, int (TIME_STEP / max(1, basic_ts))) == 0:
+        front, left_dist, right_dist = process_lidar
+
+        white_list = []
+        yellow_list = []
+
+        for cam in [left_camera, right_camera]:
+            if cam is None:
+                continue
+            raw = cam.getImage()
+            img = np.frombuffer(raw, np.uint8).reshape((camera_height, camera_width, 4))[:,:,3]
+            white, yellow = detect_lane(img)
+            if white != UNKNOWN:
+                white_list.append(white)
+            if yellow != UNKNOWN:
+                yellow_list.append(yellow)
+            
+        lane_error = UNKNOWN
+        if len(white_list) > 0:
+            lane_x = int(np.mean(white_list))
+            lane_error = lane_x - camera_width // 2
+        
+        yellow_correction = 0
+        if len(yellow_list) > 0:
+            yellow_x = int(np.mean(yellow_list))
+            if yellow_x > camera_width * 0.45:
+                yellow_correction = 0.15
+
+        if drive_state == STATE_NORMAL:
+            if front < 6:
+                avoid_direction = -1 if left_dist > right_dist else 1
+                drive_state = STATE_AVOID
+                state_timer = 0
+            else:
+                if lane_error != UNKNOWN:
+                    driver.setCrusingSpeed(0.0)
+                    pid = applyPID(lane_error)
+                    steer = filter_angle(pid + yellow_correction)
+                    set_steering(steer)
+                else:
+                    #차선 인식 실패
+                    driver.setCrusingSpeed(0.0)
+                    PID_need_reset = True
+        
+        elif drive_state == STATE_AVOID:
+            state_timer += 1
+            if front > 10 and state_timer > AVOID_STEPS:
+                drive_state = STATE_RETURN
+                state_timer = 0
+            else:
+                set_steering(filter_angle(0.3 * avoid_direction))
+        
+        elif drive_state == STATE_RETURN:
+            state_timer += 1
+            if state_timer > RETURN_STEPS:
+                drive_state = STATE_NORMAL
+                PID_need_reset = True
+            else:
+                set_steering(filter_angle(-0.25 * avoid_direction))
+        target = auto_speed(front)
+        driver.setCruisingSpeed(min(speed, target))
+    
+    i += 1
