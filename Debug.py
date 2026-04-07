@@ -56,14 +56,16 @@ steering_angle = 0.0
 STATE_NORMAL = "NORMAL" #기본 상태
 STATE_AVOID  = "AVOID"  #장애물회피 상태
 STATE_RETURN = "RETURN" #차선복귀 상태
+
 drive_state = STATE_NORMAL
 avoid_direction = 1 # -1 : 왼쪽 회피, 1 : 오른쪽 회피
 state_timer = 0
+
 AVOID_STEPS = 35  #회피 최소 유지 스텝
 RETURN_STEPS = 70 #복귀 지속 스텝
 
 #── HSV색상 범위 ──────────────
-LOWER_WHITE = np.array([0, 0, 180])
+LOWER_WHITE = np.array([0, 0, 10])
 UPPER_WHITE = np.array([180, 60, 255])
 
 LOWER_YELLOW = np.array([20,100, 100])
@@ -97,13 +99,13 @@ def applyPID(error):
     
     diff = error - applyPID.prev
     applyPID.integral += error
-
     applyPID.prev = error
 
     return KP*error + KI*applyPID.integral + KD*diff
 
 #── 조향 안정화 ──────────────
 steering_angle = 0
+
 def set_steering(angle):
     global steering_angle
     #변화제한
@@ -125,7 +127,7 @@ def filter_angle(new_angle):
 
 # ── 차선 인식 (HSV 방식 적용) ────────────────────────
 def detect_lane(img):
-    roi = img[int(camera_height*0.65):camera_height-1]
+    roi = img[int(camera_height*0.5):camera_height-1, :]
     hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
     white_mask = cv2.inRange(hsv, LOWER_WHITE, UPPER_WHITE)
     yellow_mask = cv2.inRange(hsv, LOWER_YELLOW, UPPER_YELLOW)
@@ -133,10 +135,12 @@ def detect_lane(img):
     white_pixels = np.where(white_mask>0)
     yellow_pixels = np.where(yellow_mask>0)
 
+    print("white count:", len(white_pixels[1]))
+
     white_x = UNKNOWN
     yellow_x = UNKNOWN
 
-    if len(white_pixels[1]) > 40:
+    if len(white_pixels[1]) > 25:
         white_x = int(np.mean(white_pixels[1]))
     
     if len(yellow_pixels[1]) > 40:
@@ -152,8 +156,8 @@ def process_lidar():
     n = len(ranges)
 
     front = np.min(ranges[int(n*0.45):int(n*0.55)])
-    left = np.min(ranges[int(n*0.6):int(n*0.8)])
-    right = np.min(ranges[int(n*0.2):int(n*0.4)])
+    right = np.min(ranges[int(n*0.6):int(n*0.8)])
+    left = np.min(ranges[int(n*0.2):int(n*0.4)])
 
     return front,left,right
 
@@ -221,6 +225,11 @@ while driver.step() != -1:
     check_keyboard(kb)
 
     if i % max(1, int (TIME_STEP / max(1, basic_ts))) == 0:
+        if PID_need_reset:
+            applyPID.prev = 0
+            applyPID.integral = 0
+            PID_need_reset = False
+
         front, left_dist, right_dist = process_lidar()
 
         white_list = []
@@ -230,23 +239,29 @@ while driver.step() != -1:
             if cam is None:
                 continue
             raw = cam.getImage()
-            img = np.frombuffer(raw, np.uint8).reshape((camera_height, camera_width, 4))[:,:,3]
+            img = np.frombuffer(raw, np.uint8).reshape((camera_height, camera_width, 4))
+            img = img[:,:,:3]
             white, yellow = detect_lane(img)
             if white != UNKNOWN:
                 white_list.append(white)
             if yellow != UNKNOWN:
                 yellow_list.append(yellow)
-            
+        print(f"front:{front:.2f}, left:{left_dist:.2f}, right:{right_dist:.2f}, yellow:{len(yellow_list)}")
         lane_error = UNKNOWN
-        if len(white_list) > 0:
-            lane_x = int(np.mean(white_list))
-            lane_error = lane_x - camera_width // 2
-        
-        yellow_correction = 0
+        if len(white_list) > 0 and len(yellow_list) >0:
+            white_x = int(np.mean(white_list))
+            yellow_x = int(np.mean(yellow_list))
+            lane_center = (white_x + yellow_x) // 2
+            lane_error = lane_center - camera_width // 2
+        elif len(white_list) >0:
+            white_x = int(np.mean(white_list))
+            lane_error = white_x - int(camera_width * 0.75)
+
         if len(yellow_list) > 0:
             yellow_x = int(np.mean(yellow_list))
-            if yellow_x > camera_width * 0.45:
-                yellow_correction = 0.15
+
+            if yellow_x > camera_width * 0.48:
+                lane_error += 30
 
         if drive_state == STATE_NORMAL:
             if front < 6:
@@ -255,13 +270,11 @@ while driver.step() != -1:
                 state_timer = 0
             else:
                 if lane_error != UNKNOWN:
-                    driver.setCrusingSpeed(0.0)
                     pid = applyPID(lane_error)
-                    steer = filter_angle(pid + yellow_correction)
+                    steer = filter_angle(pid)
                     set_steering(steer)
                 else:
                     #차선 인식 실패
-                    driver.setCrusingSpeed(0.0)
                     PID_need_reset = True
         
         elif drive_state == STATE_AVOID:
